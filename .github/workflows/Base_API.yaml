@@ -9,7 +9,7 @@ on:
     - cron: '0 0 * * 0'  # 每周日午夜运行一次
 
 env:
-  PYTHON_VERSION: '3.9'
+  PYTHON_VERSION: '3.10'  # 更新为支持的版本
   QT_VERSION: '6.10.0'
   PYSIDE_VERSION: '6.10.0'
 
@@ -59,10 +59,14 @@ jobs:
         echo "VIRTUAL_ENV=$PWD/venv" >> $GITHUB_ENV
         echo "$PWD/venv/bin" >> $GITHUB_PATH
         
+    - name: Upgrade build tools
+      run: |
+        source venv/bin/activate
+        pip install --upgrade pip setuptools wheel
+        
     - name: Install documentation requirements
       run: |
         source venv/bin/activate
-        pip install --upgrade pip
         pip install -r requirements-doc.txt
         
     - name: Download Qt source code
