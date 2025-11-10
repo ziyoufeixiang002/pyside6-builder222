@@ -56,12 +56,10 @@ jobs:
           libxcb1-dev \
           libxcb-xkb-dev
 
-    - name: Install Python build & Qt tooling dependencies
-      working-directory: pyside-setup
+    - name: Install aqtinstall (v3.3.2+ required for Qt 6.7+)
       run: |
-        set -euo pipefail
         pip install --upgrade pip
-        pip install "aqtinstall>=3.3.0"  # ✅ v3.3+ required for Qt 6.7 module names
+        pip install "aqtinstall>=3.3.2,<4.0"  # ✅ Critical: >=3.3.2 fixes qt_base fallback bug
 
     - name: Install Python project dependencies
       working-directory: pyside-setup
@@ -70,15 +68,15 @@ jobs:
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         if [ -f requirements-doc.txt ]; then pip install -r requirements-doc.txt; fi
 
-    - name: List available Qt 6.7.0 modules (debug aid)
-      run: aqt list-qt linux desktop --arch 6.7.0
+    - name: List Qt 6.7.0 gcc_64 modules (debug)
+      run: aqt list-qt linux desktop --modules 6.7.0 gcc_64
 
-    - name: Install minimal prebuilt Qt 6.7.0 SDK (gcc_64)
+    - name: Install minimal prebuilt Qt 6.7.0 SDK
       run: |
         set -euo pipefail
         aqt install-qt linux desktop 6.7.0 gcc_64 \
           --outputdir ${{ runner.temp }}/Qt \
-          --modules qt.base qt.tools  # ✅ Correct module names for Qt 6.7+
+          --modules qt.base qt.tools  # ✅ Correct names, no qt_base fallback
 
     - name: Add Qt bin to PATH and set env
       run: |
@@ -86,7 +84,7 @@ jobs:
         echo "$QT_BIN" >> $GITHUB_PATH
         echo "QT_DIR=${{ runner.temp }}/Qt/6.7.0/gcc_64" >> $GITHUB_ENV
 
-    - name: Verify qtpaths6 is available
+    - name: Verify qtpaths6
       run: |
         set -euo pipefail
         qtpaths6 --version
@@ -95,7 +93,7 @@ jobs:
     - name: Build PySide6 with documentation
       working-directory: pyside-setup
       env:
-        QT_SRC_DIR: ${{ runner.temp }}/Qt/6.7.0/gcc_64  # ✅ Points to SDK, NOT source
+        QT_SRC_DIR: ${{ runner.temp }}/Qt/6.7.0/gcc_64
       run: |
         set -euo pipefail
         python setup.py build \
@@ -105,23 +103,21 @@ jobs:
           --cmake="$(which cmake)" \
           --module-subset=Core,Gui,Widgets \
           --skip-examples
-          # ⚠️ Do NOT use --internal-build-type unless you know exact valid value
+          # ⚠️ No --internal-build-type — not needed and version-sensitive
 
-    - name: Build API documentation (apidoc target)
+    - name: Build API documentation
       working-directory: pyside-setup/build
       run: |
         set -euo pipefail
         if [ ! -d pyside6 ]; then
-          echo "❌ build/pyside6 not found"
+          echo "❌ build/pyside6 missing"
           ls -la
           exit 1
         fi
         cd pyside6
         if [ -f build.ninja ]; then
-          echo "⚙️ Running: ninja apidoc"
           ninja apidoc
         elif [ -f Makefile ]; then
-          echo "⚙️ Running: make apidoc"
           make apidoc
         else
           echo "❌ No build system files"
@@ -129,22 +125,20 @@ jobs:
           exit 1
         fi
 
-    - name: Verify HTML documentation generated
+    - name: Verify documentation
       run: |
         set -euo pipefail
-        DOC_PATH="pyside-setup/build/pyside6/doc/html"
-        if [ -d "$DOC_PATH" ] && [ -f "$DOC_PATH/index.html" ]; then
-          echo "✅ Documentation built successfully!"
-          echo "📁 Path: $DOC_PATH"
-          echo "📊 Size: $(du -sh "$DOC_PATH" | cut -f1)"
+        DOC="pyside-setup/build/pyside6/doc/html"
+        if [ -f "$DOC/index.html" ]; then
+          echo "✅ Success! Size: $(du -sh "$DOC" | cut -f1)"
         else
-          echo "❌ Failed: $DOC_PATH/index.html not found"
-          find pyside-setup/build -name "*.html" -path "*/doc/*" | head -n 15 || true
+          echo "❌ index.html not found"
+          find pyside-setup/build -name "*.html" -path "*/doc/*" | head -n 10
           exit 1
         fi
 
     - name: Upload documentation artifact
-      uses: actions/upload-artifact@v4  # ✅ Required after Jan 30, 2025
+      uses: actions/upload-artifact@v4  # ✅ Required after Jan 30, 2025 per GitHub policy
       with:
         name: pyside6-full-documentation
         path: pyside-setup/build/pyside6/doc/html/
