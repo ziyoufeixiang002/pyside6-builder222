@@ -10,8 +10,8 @@ permissions:
 
 jobs:
   build-docs:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120  # 设置较长超时时间，文档构建可能耗时
+    runs-on: ubuntu-20.04
+    timeout-minutes: 120
 
     steps:
     - name: Checkout pyside-setup repository
@@ -22,9 +22,9 @@ jobs:
         fetch-depth: 1
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5  # 升级到 v5（推荐），v4 也可用
       with:
-        python-version: '3.9'    # 如果遇到依赖问题，可尝试 3.10 或 3.11
+        python-version: '3.9'
         cache: 'pip'
 
     - name: Cache pip
@@ -55,7 +55,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: qt/qtbase
-        ref: v6.4.0   # 请确认 qt/qtbase 中的 tag 是否为 v6.4.0（有些仓库可能用 6.4.0 或 v6.4.0）
+        ref: v6.4.0
         path: qt-src
         fetch-depth: 1
 
@@ -78,17 +78,17 @@ jobs:
         set -e
         if [ -d pyside6 ]; then
           cd pyside6
-          # 尝试使用 ninja 或 make 构建 API 文档
           if [ -f build.ninja ]; then
             ninja apidoc
           elif [ -f Makefile ]; then
             make apidoc
           else
-            echo "No build system files found for API documentation"
+            echo "❌ No build system files found for API documentation"
+            ls -la .
             exit 1
           fi
         else
-          echo "Expected build/pyside6 directory not found"
+          echo "❌ Expected build/pyside6 directory not found"
           ls -la ..
           exit 1
         fi
@@ -99,19 +99,16 @@ jobs:
         DOC_PATH="pyside-setup/build/pyside6/doc/html"
         if [ -d "$DOC_PATH" ] && [ -f "$DOC_PATH/index.html" ]; then
           echo "✅ Documentation built successfully!"
-          echo "📊 Documentation size: $(du -sh "$DOC_PATH")"
+          echo "📊 Size: $(du -sh "$DOC_PATH" | cut -f1)"
         else
-          echo "❌ Documentation build failed or incomplete"
-          echo "🔍 Checking available documentation files:"
-          find pyside-setup/build -maxdepth 4 -type d -name "*doc*" -print || true
-          # 打印目录列表以便调试
-          ls -la pyside-setup/build || true
+          echo "❌ Documentation build failed"
+          find pyside-setup/build -type f -name "*.html" -path "*/doc/*" | head -n 10 || true
           exit 1
         fi
 
     - name: Upload documentation artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4  # ✅ 已修正：v3 → v4
       with:
         name: pyside6-full-documentation
         path: pyside-setup/build/pyside6/doc/html/
-        retention-days: 30  # 保存30天
+        retention-days: 30
