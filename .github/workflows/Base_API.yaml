@@ -1,147 +1,132 @@
-name: Build PySide6 Documentation2Base_API
+# .github/workflows/build-docs.yml
+name: Build PySide6 Docs (Base + API)
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
   workflow_dispatch:
-  schedule:
-    - cron: '0 2 * * 0'  # 每周日 02:00 UTC
-
-permissions:
-  contents: read
 
 jobs:
   build-docs:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-13]
+        python-version: ['3.10']
 
     steps:
-    - name: Checkout pyside-setup (v6.7.0)
-      uses: actions/checkout@v4
-      with:
-        repository: pyside/pyside-setup
-        ref: v6.7.0
-        path: pyside-setup
-        fetch-depth: 1
+      - name: Checkout pyside-setup
+        uses: actions/checkout@v4
+        with:
+          repository: pyside/pyside-setup
+          path: pyside-setup
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: 'pip'
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
 
-    - name: Cache pip dependencies
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-pyside-doc-3.11-${{ hashFiles('**/requirements*.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-pyside-doc-3.11-
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxml2-dev libxslt1-dev libgl1 libxcb-xinerama0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xfixes0 libxcb-xkb1 libxkbcommon-x11-0 graphviz
+          # Install qdoc via Qt6 dev tools (fallback)
+          sudo apt-get install -y qt6-base-dev-tools  # provides qdoc
 
-    - name: Install system dependencies
-      run: |
-        set -euo pipefail
-        sudo apt-get update
-        sudo apt-get install -y \
-          cmake \
-          ninja-build \
-          libclang-14-dev \
-          llvm-14-dev \
-          libxml2-dev \
-          libxslt1-dev \
-          graphviz \
-          libgl1 \
-          libglx-mesa0 \
-          libpulse-dev \
-          libudev-dev \
-          libxkbcommon-x11-dev \
-          libxcb1-dev \
-          libxcb-xkb-dev
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install libxml2 libxslt graphviz
+          # qdoc will be taken from PySide6 wheel (macOS wheels include it)
 
-    - name: Install aqtinstall v3.3.2 (bypass cached index)
-      run: |
-        set -euo pipefail
-        python -m pip install --upgrade pip
-        python -m pip install \
-          --index-url https://pypi.org/simple/ \
-          "aqtinstall==3.3.2"  # ✅ Confirmed on PyPI (2024-12-19), forces latest index
+      - name: Install PySide6 (to get qdoc & headers)
+        run: |
+          pip install --upgrade pip
+          pip install PySide6==6.7.0  # use fixed version for stability
 
-    - name: Install Python project dependencies
-      working-directory: pyside-setup
-      run: |
-        set -euo pipefail
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        if [ -f requirements-doc.txt ]; then pip install -r requirements-doc.txt; fi
+      - name: Locate qdoc and qtbase include path
+        id: find-tools
+        shell: bash
+        run: |
+          # Try to find qdoc in PySide6 install
+          QDOC_PATH=$(python -c "
+import PySide6
+import os, glob
+site_pkg = os.path.dirname(PySide6.__file__)
+candidates = glob.glob(os.path.join(site_pkg, 'Qt', 'bin', 'qdoc*')) + \
+             glob.glob(os.path.join(site_pkg, '..', '..', 'Qt6', 'bin', 'qdoc*')) + \
+             glob.glob('/usr/lib/qt6/bin/qdoc') + \
+             glob.glob('/opt/homebrew/opt/qt@6/bin/qdoc') + \
+             glob.glob('C:/Qt/*/msvc*/*/bin/qdoc.exe')
+print(candidates[0] if candidates else '')
+          ")
+          if [[ -z "$QDOC_PATH" ]]; then
+            echo "qdoc not found! Falling back to system qdoc (if exists)"
+            QDOC_PATH=$(which qdoc || echo "")
+          fi
+          echo "qdoc_path=$QDOC_PATH" >> $GITHUB_ENV
 
-    - name: List Qt 6.7.0 gcc_64 modules (debug)
-      run: aqt list-qt linux desktop --modules 6.7.0 gcc_64
+          # Locate qtbase headers: from PySide6/Qt/include
+          QT_INCLUDE=$(python -c "
+import PySide6, os
+site_pkg = os.path.dirname(PySide6.__file__)
+inc = os.path.join(site_pkg, 'Qt', 'include')
+print(inc if os.path.isdir(inc) else '')
+          ")
+          echo "qt_src_dir=$QT_INCLUDE" >> $GITHUB_ENV
 
-    - name: Install minimal prebuilt Qt 6.7.0 SDK
-      run: |
-        set -euo pipefail
-        aqt install-qt linux desktop 6.7.0 gcc_64 \
-          --outputdir ${{ runner.temp }}/Qt \
-          --modules qt.base qt.tools
+          echo "Found qdoc: $QDOC_PATH"
+          echo "Qt include dir: $QT_INCLUDE"
 
-    - name: Add Qt bin to PATH and set env
-      run: |
-        QT_BIN="${{ runner.temp }}/Qt/6.7.0/gcc_64/bin"
-        echo "$QT_BIN" >> $GITHUB_PATH
-        echo "QT_DIR=${{ runner.temp }}/Qt/6.7.0/gcc_64" >> $GITHUB_ENV
+      - name: Verify qdoc and include dir
+        run: |
+          echo "qdoc path: ${{ env.qdoc_path }}"
+          echo "qt_src_dir: ${{ env.qt_src_dir }}"
+          if [[ -z "${{ env.qdoc_path }}" ]] || [[ ! -x "${{ env.qdoc_path }}" ]]; then
+            echo "❌ qdoc not found or not executable"
+            exit 1
+          fi
+          if [[ ! -d "${{ env.qt_src_dir }}/QtCore" ]]; then
+            echo "❌ qtbase headers (QtCore) not found in ${{ env.qt_src_dir }}"
+            exit 1
+          fi
 
-    - name: Verify qtpaths6
-      run: |
-        set -euo pipefail
-        qtpaths6 --version
-        qtpaths6 --query QT_INSTALL_HEADERS
+      - name: Install doc build requirements
+        working-directory: pyside-setup
+        run: |
+          pip install -r requirements-doc.txt
 
-    - name: Build PySide6 with documentation
-      working-directory: pyside-setup
-      env:
-        QT_SRC_DIR: ${{ runner.temp }}/Qt/6.7.0/gcc_64
-      run: |
-        set -euo pipefail
-        python setup.py build \
-          --build-docs \
-          --doc-build-online \
-          --qt-src-dir "${QT_SRC_DIR}" \
-          --cmake="$(which cmake)" \
-          --module-subset=Core,Gui,Widgets \
-          --skip-examples
+      - name: Build PySide6 (with --build-docs)
+        working-directory: pyside-setup
+        run: |
+          python setup.py build \
+            --build-docs \
+            --doc-build-online \
+            --qt-src-dir "${{ env.qt_src_dir }}" \
+            --qdoc "${{ env.qdoc_path }}"
 
-    - name: Build API documentation
-      working-directory: pyside-setup/build
-      run: |
-        set -euo pipefail
-        if [ ! -d pyside6 ]; then
-          echo "❌ build/pyside6 missing"
-          ls -la
-          exit 1
-        fi
-        cd pyside6
-        if [ -f build.ninja ]; then
-          ninja apidoc
-        elif [ -f Makefile ]; then
-          make apidoc
-        else
-          echo "❌ No build system files"
-          ls -la
-          exit 1
-        fi
+      - name: Build API docs (ninja apidoc)
+        working-directory: pyside-setup/build/$(ls build | head -n1)/build/pyside6
+        run: |
+          # Ensure ninja is available
+          pip install ninja
+          ninja apidoc -j 2
 
-    - name: Verify documentation
-      run: |
-        set -euo pipefail
-        DOC="pyside-setup/build/pyside6/doc/html"
-        if [ -f "$DOC/index.html" ]; then
-          echo "✅ Success! Size: $(du -sh "$DOC" | cut -f1)"
-        else
-          echo "❌ index.html not found"
-          find pyside-setup/build -name "*.html" -path "*/doc/*" | head -n 10
-          exit 1
-        fi
+      - name: Upload HTML docs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyside6-docs-${{ matrix.os }}
+          path: pyside-setup/build/*/build/pyside6/doc/html/
 
-    - name: Upload documentation artifact
-      uses: actions/upload-artifact@v4  # ✅ REQUIRED after Jan 30, 2025 — per GitHub deprecation policy
-      with:
-        name: pyside6-full-documentation
-        path: pyside-setup/build/pyside6/doc/html/
-        retention-days: 30
+      - name: Upload QCH files (optional)
+        if: runner.os != 'Windows'  # Windows paths messy; skip for simplicity
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyside6-qch-${{ matrix.os }}
+          path: |
+            pyside-setup/build/*/build/pyside6/doc/PySide6.qch
+            pyside-setup/build/*/build/shiboken6/doc/Shiboken6.qch
