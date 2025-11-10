@@ -1,0 +1,92 @@
+name: Build PySide6 Documentation2Base_API
+
+on:
+  workflow_dispatch:  # 手动触发构建
+  schedule:
+    - cron: '0 2 * * 0'  # 每周日早上2点自动构建
+
+jobs:
+  build-docs:
+    runs-on: ubuntu-20.04
+    timeout-minutes: 120  # 设置较长超时时间，文档构建可能耗时
+    
+    steps:
+    - name: Checkout pyside-setup repository
+      uses: actions/checkout@v4
+      with:
+        repository: pyside/pyside-setup
+        path: pyside-setup
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        cache: 'pip'
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake ninja-build libclang-dev llvm \
+          libxml2-dev libxslt1-dev graphviz \
+          libgl1 libpulse-dev libudev-dev \
+          libxkbcommon-x11-dev libxcb-* x11-utils
+    
+    - name: Install Python dependencies
+      working-directory: pyside-setup
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-doc.txt
+    
+    - name: Checkout Qt Base source from GitHub mirror
+      uses: actions/checkout@v4
+      with:
+        repository: qt/qtbase
+        ref: 6.4.0  # 使用较稳定的版本
+        path: qt-src
+    
+    - name: Build PySide6 with documentation
+      working-directory: pyside-setup
+      run: |
+        python setup.py build \
+          --build-docs \
+          --doc-build-online \
+          --qt-src-dir ${{ github.workspace }}/qt-src \
+          --cmake=$(which cmake) \
+          --module-subset=Core,Gui,Widgets \
+          --skip-examples
+    
+    - name: Build API documentation
+      working-directory: pyside-setup/build
+      run: |
+        cd pyside6
+        # 尝试使用 ninja 或 make 构建 API 文档
+        if [ -f build.ninja ]; then
+          ninja apidoc
+        elif [ -f Makefile ]; then
+          make apidoc
+        else
+          echo "No build system files found for API documentation"
+          exit 1
+        fi
+    
+    - name: Verify documentation build
+      run: |
+        DOC_PATH="pyside-setup/build/pyside6/doc/html"
+        if [ -d "$DOC_PATH" ] && [ -f "$DOC_PATH/index.html" ]; then
+          echo "✅ Documentation built successfully!"
+          echo "📊 Documentation size: $(du -sh "$DOC_PATH")"
+        else
+          echo "❌ Documentation build failed or incomplete"
+          echo "🔍 Checking available documentation files:"
+          find pyside-setup/build -name "*doc*" -type d || true
+          exit 1
+        fi
+    
+    - name: Upload documentation artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: pyside6-full-documentation
+        path: pyside-setup/build/pyside6/doc/html/
+        retention-days: 30  # 保存30天
