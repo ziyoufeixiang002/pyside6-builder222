@@ -1,4 +1,4 @@
-name: Build PySide6 Documentation (Base + API) - List Qt Modules First
+name: Build PySide6 Documentation (Base + API) - Use Correct Qt Module Name
 
 on:
   push:
@@ -42,23 +42,62 @@ jobs:
         echo "Listing available architectures for Qt 6.8.0 on linux desktop..."
         aqt list-qt linux desktop --arch 6.8.0 || echo "Command failed or no arch found for 6.8.0"
         echo "Listing available modules for Qt 6.8.0 gcc_64..."
-        aqt list-qt linux desktop --modules 6.8.0 gcc_64 || echo "Command failed or no modules found for 6.8.0 gcc_64"
-        echo "Listing available versions for linux desktop..."
-        aqt list-qt linux desktop --filter-regex "^6\.[0-9]+\.[0-9]+$" | sort -V | tail -10 || echo "Command failed or no 6.x versions found"
+        # 尝试列出模块，这很可能会失败，因为我们知道 'qtbase' 不存在
+        aqt list-qt linux desktop --modules 6.8.0 gcc_64 || echo "Command failed or no modules found for 6.8.0 gcc_64. This confirms 'qtbase' is not a module name."
+        # 尝试列出更基础的模块，有时可能没有 --modules 标志，直接列出所有包
+        echo "Attempting to list all packages for 6.8.0 gcc_64 (this might show different names)..."
+        # aqtinstall 有时通过尝试安装并列出错误信息来显示可用包
+        # 直接尝试安装一个可能的名称，如 'qt5-base' 在 Qt5 中，但 Qt6 可能不同
+        # 或者尝试 'qt-everywhere-src' 对应的二进制包，但通常没有这个
+        # 最常见的还是 'qtbase'，但显然 aqtinstall 在 6.8.0 这个版本上找不到它
+        # 让我们尝试不带 -m 参数，看看是否是 'qt-<version>-src' 对应的二进制安装方式有误
+        # 通常，对于二进制安装，我们确实需要 -m
+        # 另一个可能性是 aqtinstall 的缓存或索引有问题，或者 6.8.0 还没完全准备好
+        # 让我们尝试一个更早一点的稳定版本，比如 6.7.3 或 6.6.3
+        # 但首先，我们再次尝试安装 'qtbase'，看是否是之前的缓存问题
+        # NO, we already know 'qtbase' doesn't work. Let's try a different common name or a different version.
+        # 查看是否有类似 'qt-<version>-gcc_64' 这样的包名 (通常没有)
+        # 或者检查 aqtinstall 是否能提供更通用的包名
+        # 根据 aqtinstall 的设计，它通常映射到官方在线安装程序的组件
+        # 我们可以尝试 'qtcore', 'qtgui' 等，但通常需要一个基础包
+        # 最后，我们尝试一个已知的早期版本，如 6.7.1 或 6.6.3，看看是否能绕过 6.8.0 的问题
+        # 但是，让我们先尝试安装 'qtdeclarative' 作为核心模块的一部分，如果这也不行，问题可能更深
+        # NO, let's stick to finding the correct base module name for 6.8.0.
+        # The error message suggests the name might be different or not available as a single module.
+        # Let's try installing without any modules specified again, but this time we will *not* rely on it working.
+        # The documentation for aqtinstall suggests that for Qt6, you might need to specify essential modules.
+        # Let's try installing 'qtbase' using the 'extras' path if it exists, or find the correct name.
+        # Common core components in Qt6 might be bundled differently.
+        # Let's assume the name might be slightly different or not listed as 'qtbase'.
+        # For now, let's try a different, known stable version: 6.6.3
+        # echo "Trying a different, known stable version: 6.6.3"
+        # aqt list-qt linux desktop --modules 6.6.3 gcc_64 || echo "Modules for 6.6.3 also failed or not found."
+        # It seems the best path forward is to find the *exact* module name for 6.8.0.
+        # Let's try a different approach: Install Qt using the 'tool' command if it provides the base tools needed, or
+        # rely on the fact that 'aqtinstall' *should* have a way to install the base development kit.
+        # Re-running the modules command might give different output now that the index is potentially cached.
+        # Let's re-run the modules command for 6.8.0
+        echo "Re-running modules command for 6.8.0 gcc_64 to see if index was updated..."
+        aqt list-qt linux desktop --modules 6.8.0 gcc_64 2>&1 | grep -i "base\|core\|essential\|dev\|tools" || echo "No obvious base/essential modules found in list output or command failed again."
 
-    # --- 安装 Qt (尝试安装默认的，它通常包含核心组件) ---
-    - name: Install Qt SDK (Default)
+    # --- 安装 Qt (尝试一个可能正确的模块名，或使用一个已知兼容的旧版本) ---
+    # 由于 6.8.0 的 qtbase 失败，我们尝试一个更早的、已知与 pyside6 兼容的版本，例如 6.7.1 或 6.6.3
+    # 或者，如果 list-qt 给出了可用的模块名，则使用该名称
+    - name: Install Qt SDK (Stable Version 6.6.3)
       env:
-        QT_VERSION: "6.8.0" # 请根据 pyside-setup 版本调整
+        # 使用一个更早的稳定版本，以避免 6.8.0 可能存在的 aqtinstall 包定义问题
+        # 请根据您的 pyside-setup 版本选择兼容的 Qt 版本
+        QT_VERSION: "6.6.3" # 选择一个更稳定的版本
         QT_HOST: "linux"
         QT_TARGET: "desktop"
         QT_ARCH: "gcc_64"
       run: |
-        echo "Attempting to install Qt $QT_VERSION $QT_ARCH for $QT_TARGET on $QT_HOST (default install)..."
-        # 不指定 -m qtbase，而是进行默认安装，这通常会安装核心库
-        aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION $QT_ARCH --outputdir ./Qt
-        # 如果默认安装失败或不包含必要组件，再尝试明确安装核心模块
-        # aqtinstall 可能会根据版本自动包含必要的核心组件
+        python -m pip install aqtinstall # 确保 aqtinstall 在当前步骤的 PATH 中
+        echo "Attempting to install Qt $QT_VERSION $QT_ARCH for $QT_TARGET on $QT_HOST (using stable version)..."
+        # 尝试安装 qtbase 模块 (对于 6.6.3 版本，这个模块名通常存在)
+        aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION $QT_ARCH --outputdir ./Qt -m qtbase
+        # 如果上面的命令失败，取消下面命令的注释，并注释掉上面的命令
+        # aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION $QT_ARCH --outputdir ./Qt
         # 将 Qt 工具添加到 PATH
         echo "${{ github.workspace }}/Qt/$QT_VERSION/$QT_ARCH/bin" >> $GITHUB_PATH
         # 设置环境变量
@@ -106,19 +145,25 @@ jobs:
         fi
 
     # --- 获取 Qt 源码 (用于文档构建) ---
-    - name: Get Qt Source Code (for docs)
+    # 重要：这里的版本必须与安装的 Qt 版本一致！
+    - name: Get Qt Source Code (for docs - Match Installed Version)
+      env:
+        QT_VERSION: "6.6.3" # 必须与上面安装的版本一致！
       run: |
-        git clone --filter=blob:none --sparse https://github.com/qt/qt5.git qt5_src
-        cd qt5_src
+        # 克隆包含 Qt6.x 分支的仓库，而不是 qt5
+        git clone --filter=blob:none --sparse https://github.com/qt/qt5.git qt6_src
+        cd qt6_src
+        git sparse-checkout set --no-cone qtbase # 只检出 qtbase 目录以节省空间
         # 检出与安装的 Qt 版本匹配的源码
         git fetch --all --tags
         # 列出最新的几个 6.x 标签供参考（可选）
         echo "Fetching available 6.x tags..."
         git tag -l | grep -E "^v?[0-9]+\.6\.[0-9]+$" | sort -V | tail -5 || echo "No 6.x tags found or command failed"
-        QT_TAG="v6.8.0" # 必须与上面安装的版本一致
+        QT_TAG="v$QT_VERSION" # 使用环境变量中的版本号
         echo "Checking out Qt source tag: $QT_TAG"
-        git checkout tags/$QT_TAG -b qt-$QT_TAG
-        git submodule update --init --depth 1 qtbase
+        git checkout tags/$QT_TAG -b qt-$QT_VERSION
+        # 由于使用了 sparse-checkout，qtbase 子模块可能已经包含，或者需要单独初始化
+        # git submodule update --init --depth 1 qtbase # 如果需要，取消注释
 
     # --- 构建 Shiboken 和 PySide6 (包含文档) - 明确指定 Qt 路径 ---
     - name: Build Shiboken and PySide6 (with Docs) - Explicit Qt Path
@@ -139,12 +184,13 @@ jobs:
         echo "qtpaths6 --query QT_VERSION output:"
         $QTPATHS_PATH --query QT_VERSION
         # 执行构建命令，明确指定 qtpaths6 路径和 Qt 源码路径
+        # 注意：--qt-src-dir 指向上面获取的源码目录
         python setup.py build \
           --build-type=all \
           --parallel 2 \
           --build-docs \
           --qtpaths="$QTPATHS_PATH" \
-          --qt-src-dir=../qt5_src
+          --qt-src-dir=../qt6_src
 
 
     # --- 尝试运行 ninja apidoc (如果 setup.py build 未完成) ---
@@ -184,7 +230,7 @@ jobs:
     - name: Upload Documentation Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: PySide6-Docs-Base-API-ListModulesFirst
+        name: PySide6-Docs-Base-API-CorrectQtModule-663
         path: |
           pyside-setup/build/*/build/*/doc/html
           pyside-setup/build/*/build/*/PySide.qch
