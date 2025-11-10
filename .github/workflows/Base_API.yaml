@@ -56,10 +56,11 @@ jobs:
           libxcb1-dev \
           libxcb-xkb-dev
 
-    - name: Install aqtinstall (v3.3.2+ required for Qt 6.7+)
+    - name: Install aqtinstall v3.3.2 (critical fix for Qt 6.7+)
       run: |
-        pip install --upgrade pip
-        pip install "aqtinstall>=3.3.2,<4.0"  # ✅ Critical: >=3.3.2 fixes qt_base fallback bug
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        python -m pip install "aqtinstall==3.3.2"  # ✅ Exact version — fixes qt_base fallback bug
 
     - name: Install Python project dependencies
       working-directory: pyside-setup
@@ -76,7 +77,7 @@ jobs:
         set -euo pipefail
         aqt install-qt linux desktop 6.7.0 gcc_64 \
           --outputdir ${{ runner.temp }}/Qt \
-          --modules qt.base qt.tools  # ✅ Correct names, no qt_base fallback
+          --modules qt.base qt.tools
 
     - name: Add Qt bin to PATH and set env
       run: |
@@ -103,7 +104,6 @@ jobs:
           --cmake="$(which cmake)" \
           --module-subset=Core,Gui,Widgets \
           --skip-examples
-          # ⚠️ No --internal-build-type — not needed and version-sensitive
 
     - name: Build API documentation
       working-directory: pyside-setup/build
@@ -138,7 +138,7 @@ jobs:
         fi
 
     - name: Upload documentation artifact
-      uses: actions/upload-artifact@v4  # ✅ Required after Jan 30, 2025 per GitHub policy
+      uses: actions/upload-artifact@v4  # ✅ REQUIRED after Jan 30, 2025 (per GitHub policy)
       with:
         name: pyside6-full-documentation
         path: pyside-setup/build/pyside6/doc/html/
