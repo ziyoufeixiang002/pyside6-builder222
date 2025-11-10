@@ -4,7 +4,7 @@ on:
   workflow_dispatch:  # 允许手动触发
 
 env:
-  PYTHON_VERSION: '3.9'  # 改为支持的版本
+  PYTHON_VERSION: '3.9'
   QT_VERSION: '6.10.0'
   PYSIDE_VERSION: '6.10.0'
 
@@ -76,16 +76,28 @@ jobs:
         tar -xf qt-everywhere-src-$QT_VERSION.tar.xz
         echo "QT_SRC_DIR=$PWD/qt-everywhere-src-$QT_VERSION" >> $GITHUB_ENV
         
-    - name: Build PySide6 with documentation
+    - name: Check available build options
       run: |
         source venv/bin/activate
+        python setup.py build --help || echo "Build help not available"
+        
+    - name: Build PySide6 (without docs first)
+      run: |
+        source venv/bin/activate
+        # 先构建 PySide6 本身，不构建文档
         python setup.py build \
           --qt-src-dir=qt-everywhere-src-$QT_VERSION \
-          --build-docs \
-          --doc-build-online \
           --parallel=4 \
           --cmake-generator=Ninja \
           --ignore-git
+        
+    - name: Build documentation separately
+      run: |
+        source venv/bin/activate
+        # 单独构建文档
+        python setup.py build_docs \
+          --qt-src-dir=qt-everywhere-src-$QT_VERSION \
+          --online
         
     - name: Build API documentation
       run: |
