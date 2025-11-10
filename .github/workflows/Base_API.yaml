@@ -1,4 +1,4 @@
-name: Build PySide6 Documentation (Base + API) - With Explicit Qt Path - Fixed aqtinstall
+name: Build PySide6 Documentation (Base + API) - List Qt Modules First
 
 on:
   push:
@@ -31,22 +31,34 @@ jobs:
       with:
         python-version: '3.11'
 
-    # --- 安装 aqtinstall 和 Qt (明确指定版本和架构 - 修正 aqtinstall 命令) ---
-    - name: Install aqtinstall and Qt SDK
+    # --- 安装 aqtinstall ---
+    - name: Install aqtinstall
+      run: |
+        python -m pip install aqtinstall
+
+    # --- 列出可用的 Qt 版本和架构 ---
+    - name: List Available Qt Versions and Architectures
+      run: |
+        echo "Listing available architectures for Qt 6.8.0 on linux desktop..."
+        aqt list-qt linux desktop --arch 6.8.0 || echo "Command failed or no arch found for 6.8.0"
+        echo "Listing available modules for Qt 6.8.0 gcc_64..."
+        aqt list-qt linux desktop --modules 6.8.0 gcc_64 || echo "Command failed or no modules found for 6.8.0 gcc_64"
+        echo "Listing available versions for linux desktop..."
+        aqt list-qt linux desktop --filter-regex "^6\.[0-9]+\.[0-9]+$" | sort -V | tail -10 || echo "Command failed or no 6.x versions found"
+
+    # --- 安装 Qt (尝试安装默认的，它通常包含核心组件) ---
+    - name: Install Qt SDK (Default)
       env:
-        # 设置环境变量以便 aqtinstall 和后续步骤使用
         QT_VERSION: "6.8.0" # 请根据 pyside-setup 版本调整
         QT_HOST: "linux"
         QT_TARGET: "desktop"
-        QT_ARCH: "gcc_64" # Linux 上通常是 gcc_64
+        QT_ARCH: "gcc_64"
       run: |
-        python -m pip install aqtinstall
-        echo "Installing Qt $QT_VERSION for $QT_TARGET $QT_ARCH on $QT_HOST..."
-        # 修正命令：架构 gcc_64 作为位置参数，紧跟在版本号后面
-        # aqt install-qt <host> <target> <version> [arch] ...
-        aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION $QT_ARCH --outputdir ./Qt -m qtbase
-        # 如果需要其他模块（例如用于文档构建的 qdoc），可以在这里添加
-        # aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION $QT_ARCH --outputdir ./Qt -m <additional_module>
+        echo "Attempting to install Qt $QT_VERSION $QT_ARCH for $QT_TARGET on $QT_HOST (default install)..."
+        # 不指定 -m qtbase，而是进行默认安装，这通常会安装核心库
+        aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION $QT_ARCH --outputdir ./Qt
+        # 如果默认安装失败或不包含必要组件，再尝试明确安装核心模块
+        # aqtinstall 可能会根据版本自动包含必要的核心组件
         # 将 Qt 工具添加到 PATH
         echo "${{ github.workspace }}/Qt/$QT_VERSION/$QT_ARCH/bin" >> $GITHUB_PATH
         # 设置环境变量
@@ -172,7 +184,7 @@ jobs:
     - name: Upload Documentation Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: PySide6-Docs-Base-API-ExplicitQtPath-FixedAqtinstall
+        name: PySide6-Docs-Base-API-ListModulesFirst
         path: |
           pyside-setup/build/*/build/*/doc/html
           pyside-setup/build/*/build/*/PySide.qch
