@@ -1,132 +1,126 @@
-# .github/workflows/build-docs.yml
-name: Build PySide6 Docs (Base + API)
+name: Build PySide6 Documentation (Base + API)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main ] # 或者您希望触发构建的分支
   pull_request:
-  workflow_dispatch:
+    branches: [ main ] # 或者您希望触发构建的分支
+  workflow_dispatch: # 允许手动触发
 
 jobs:
   build-docs:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-22.04, windows-2022, macos-13]
-        python-version: ['3.10']
+    runs-on: ubuntu-latest # 推荐使用 Ubuntu，因为 macOS 和 Windows 可能有更多依赖问题
+    timeout-minutes: 120 # 设置较长的超时时间，因为构建很耗时
 
     steps:
-      - name: Checkout pyside-setup
-        uses: actions/checkout@v4
-        with:
-          repository: pyside/pyside-setup
-          path: pyside-setup
+    - name: Checkout PySide6 Setup Repository
+      uses: actions/checkout@v4
+      with:
+        repository: pyside/pyside-setup
+        path: pyside-setup
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+    # --- 安装系统依赖 ---
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update
+        # 安装构建 PySide6 和文档所需的基本依赖
+        sudo apt-get install -y build-essential cmake git libclang-dev libxml2-dev libxslt1-dev python3-dev graphviz
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxml2-dev libxslt1-dev libgl1 libxcb-xinerama0 \
-            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
-            libxcb-shape0 libxcb-xfixes0 libxcb-xkb1 libxkbcommon-x11-0 graphviz
-          # Install qdoc via Qt6 dev tools (fallback)
-          sudo apt-get install -y qt6-base-dev-tools  # provides qdoc
+    # --- 设置 Python 环境 ---
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11' # 使用受支持的 Python 版本，根据需要调整
 
-      - name: Install system dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install libxml2 libxslt graphviz
-          # qdoc will be taken from PySide6 wheel (macOS wheels include it)
+    # --- 安装 Python 依赖 ---
+    - name: Install Python Documentation Requirements
+      working-directory: ./pyside-setup
+      run: |
+        python -m pip install --upgrade pip
+        # 安装文档构建所需的 Python 包
+        if [ -f requirements-doc.txt ]; then pip install -r requirements-doc.txt; else echo "requirements-doc.txt not found in pyside-setup root, attempting to proceed."; fi
 
-      - name: Install PySide6 (to get qdoc & headers)
-        run: |
-          pip install --upgrade pip
-          pip install PySide6==6.7.0  # use fixed version for stability
+    # --- 获取 Qt 源码 (使用镜像仓库) ---
+    - name: Get Qt Source Code (Mirror)
+      run: |
+        git clone --filter=blob:none --sparse https://github.com/qt/qt5.git qt5_src
+        cd qt5_src
+        # 检出特定的 Qt 6.x 版本标签，例如 6.8.0
+        # 注意：请根据 pyside-setup 版本选择兼容的 Qt 版本
+        git fetch --all --tags
+        # 列出可用的 6.x 标签（可选，用于调试）
+        git tag -l | grep -E "^v?6\.[0-9]+\.[0-9]+$" | sort -V | tail -5 || echo "No 6.x tags found or command failed"
+        # 请根据需要调整版本号
+        QT_TAG="v6.8.0" # 示例版本，务必根据实际情况修改
+        git checkout tags/$QT_TAG -b qt-$QT_TAG
+        # 获取必要的子模块（根据需要可能需要调整）
+        git submodule update --init --depth 1 qtbase
+        # 如果需要更多模块，可以在这里添加 submodule update 命令
+        # git submodule update --init --depth 1 <module_name>
 
-      - name: Locate qdoc and qtbase include path
-        id: find-tools
-        shell: bash
-        run: |
-          # Try to find qdoc in PySide6 install
-          QDOC_PATH=$(python -c "
-import PySide6
-import os, glob
-site_pkg = os.path.dirname(PySide6.__file__)
-candidates = glob.glob(os.path.join(site_pkg, 'Qt', 'bin', 'qdoc*')) + \
-             glob.glob(os.path.join(site_pkg, '..', '..', 'Qt6', 'bin', 'qdoc*')) + \
-             glob.glob('/usr/lib/qt6/bin/qdoc') + \
-             glob.glob('/opt/homebrew/opt/qt@6/bin/qdoc') + \
-             glob.glob('C:/Qt/*/msvc*/*/bin/qdoc.exe')
-print(candidates[0] if candidates else '')
-          ")
-          if [[ -z "$QDOC_PATH" ]]; then
-            echo "qdoc not found! Falling back to system qdoc (if exists)"
-            QDOC_PATH=$(which qdoc || echo "")
-          fi
-          echo "qdoc_path=$QDOC_PATH" >> $GITHUB_ENV
+    # --- 构建 Shiboken 和 PySide6 ---
+    - name: Build Shiboken and PySide6
+      working-directory: ./pyside-setup
+      run: |
+        python setup.py build --build-type=all --parallel 2 # 使用 2 个核心并行构建以节省时间，根据 runner 能力调整
+        # 安装到临时目录，以便文档构建脚本能找到它们
+        python setup.py install --target /tmp/pyside6_install --no-deps # --no-deps 避免重复安装 Python 依赖
 
-          # Locate qtbase headers: from PySide6/Qt/include
-          QT_INCLUDE=$(python -c "
-import PySide6, os
-site_pkg = os.path.dirname(PySide6.__file__)
-inc = os.path.join(site_pkg, 'Qt', 'include')
-print(inc if os.path.isdir(inc) else '')
-          ")
-          echo "qt_src_dir=$QT_INCLUDE" >> $GITHUB_ENV
-
-          echo "Found qdoc: $QDOC_PATH"
-          echo "Qt include dir: $QT_INCLUDE"
-
-      - name: Verify qdoc and include dir
-        run: |
-          echo "qdoc path: ${{ env.qdoc_path }}"
-          echo "qt_src_dir: ${{ env.qt_src_dir }}"
-          if [[ -z "${{ env.qdoc_path }}" ]] || [[ ! -x "${{ env.qdoc_path }}" ]]; then
-            echo "❌ qdoc not found or not executable"
+    # --- 构建完整文档 (Base + API) ---
+    - name: Build Full Documentation (Base + API)
+      working-directory: ./pyside-setup
+      run: |
+        # 设置 PYTHONPATH 以便找到刚构建安装的模块
+        export PYTHONPATH="/tmp/pyside6_install:$PYTHONPATH"
+        # 设置 PATH 以便找到 dot (graphviz)
+        export PATH="/usr/bin:$PATH"
+        # 运行构建命令，指定 Qt 源码路径
+        # 注意：这里的 --qt-src-dir 指向的是克隆的 qt5_src 目录
+        python setup.py build --build-type=all --parallel 2 --build-docs # 确保启用文档构建
+        # 文档构建可能在 setup.py build 过程中完成，或者需要单独的步骤
+        # 尝试运行 ninja apidoc (如果 setup.py build 没有完全完成文档构建)
+        # 查找构建目录，通常在 build/<python_env_name>/build/pyside6
+        # 注意：这里的路径可能需要根据实际 setup.py 输出调整
+        # 假设构建目录是 build/$(python -c 'import sys; print("".join(sys.version.split()[:2]))')/build
+        # 更可靠的查找方式
+        BUILD_DIR=$(find /home/runner/work/pyside6-docs-builder/pyside6-docs-builder/pyside-setup/build -maxdepth 2 -type d -name "*pyside6" | head -n 1)
+        SHIBOKEN_BUILD_DIR=$(find /home/runner/work/pyside6-docs-builder/pyside6-docs-builder/pyside-setup/build -maxdepth 2 -type d -name "*shiboken6" | head -n 1)
+        echo "Found PySide6 build dir: $BUILD_DIR"
+        echo "Found Shiboken6 build dir: $SHIBOKEN_BUILD_DIR"
+        if [ -d "$BUILD_DIR" ]; then
+            cd "$BUILD_DIR"
+            if [ -f "build.ninja" ]; then
+                ninja apidoc -j 2 # 使用 2 个核心并行构建文档
+            else
+                echo "build.ninja not found in $BUILD_DIR, assuming setup.py handled it or failed."
+                # 如果 ninja 不可用，可能需要查找其他构建系统输出
+                # 或者 setup.py build --build-docs 已经尝试构建了
+                ls -la # 列出目录内容以便调试
+            fi
+        else
+            echo "PySide6 build directory not found!"
+            ls -la /home/runner/work/pyside6-docs-builder/pyside6-docs-builder/pyside-setup/build # 列出构建根目录以便调试
             exit 1
-          fi
-          if [[ ! -d "${{ env.qt_src_dir }}/QtCore" ]]; then
-            echo "❌ qtbase headers (QtCore) not found in ${{ env.qt_src_dir }}"
-            exit 1
-          fi
+        fi
+        if [ -d "$SHIBOKEN_BUILD_DIR" ]; then
+            cd "$SHIBOKEN_BUILD_DIR"
+            if [ -f "build.ninja" ]; then
+                 # Shiboken 也可能有文档构建步骤，如果需要
+                 # ninja apidoc # 通常 PySide6 的 ninja apidoc 会处理相关部分
+                 echo "Shiboken build dir: $SHIBOKEN_BUILD_DIR"
+            fi
+        fi
 
-      - name: Install doc build requirements
-        working-directory: pyside-setup
-        run: |
-          pip install -r requirements-doc.txt
 
-      - name: Build PySide6 (with --build-docs)
-        working-directory: pyside-setup
-        run: |
-          python setup.py build \
-            --build-docs \
-            --doc-build-online \
-            --qt-src-dir "${{ env.qt_src_dir }}" \
-            --qdoc "${{ env.qdoc_path }}"
-
-      - name: Build API docs (ninja apidoc)
-        working-directory: pyside-setup/build/$(ls build | head -n1)/build/pyside6
-        run: |
-          # Ensure ninja is available
-          pip install ninja
-          ninja apidoc -j 2
-
-      - name: Upload HTML docs as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pyside6-docs-${{ matrix.os }}
-          path: pyside-setup/build/*/build/pyside6/doc/html/
-
-      - name: Upload QCH files (optional)
-        if: runner.os != 'Windows'  # Windows paths messy; skip for simplicity
-        uses: actions/upload-artifact@v4
-        with:
-          name: pyside6-qch-${{ matrix.os }}
-          path: |
-            pyside-setup/build/*/build/pyside6/doc/PySide6.qch
-            pyside-setup/build/*/build/shiboken6/doc/Shiboken6.qch
+    # --- 上传文档工件 ---
+    - name: Upload Documentation Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: PySide6-Docs-Base-API
+        path: |
+          pyside-setup/build/*/build/pyside6/doc/html
+          pyside-setup/build/*/build/shiboken6/doc/html
+          pyside-setup/build/*/build/pyside6/PySide.qch
+          pyside-setup/build/*/build/shiboken6/Shiboken.qch
+        if-no-files-found: ignore # 如果未找到文件，不要失败
+        retention-days: 30
