@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-docs:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     timeout-minutes: 120  # 设置较长超时时间，文档构建可能耗时
 
     steps:
