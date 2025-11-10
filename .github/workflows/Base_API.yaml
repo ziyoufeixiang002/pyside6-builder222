@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-docs:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest  # ✅ 改为 ubuntu-latest（24.04）
     timeout-minutes: 120
 
     steps:
@@ -22,7 +22,7 @@ jobs:
         fetch-depth: 1
 
     - name: Set up Python
-      uses: actions/setup-python@v5  # 升级到 v5（推荐），v4 也可用
+      uses: actions/setup-python@v5
       with:
         python-version: '3.9'
         cache: 'pip'
@@ -39,9 +39,10 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          cmake ninja-build libclang-dev llvm \
+          cmake ninja-build \
+          libclang-14-dev llvm-14-dev \  # ✅ 显式使用 clang-14 兼容 Qt6.4
           libxml2-dev libxslt1-dev graphviz \
-          libgl1-mesa-glx libpulse-dev libudev-dev \
+          libgl1 libglx-mesa0 libpulse-dev libudev-dev \
           libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev x11-utils
 
     - name: Install Python dependencies
@@ -63,6 +64,9 @@ jobs:
       working-directory: pyside-setup
       env:
         QT_SRC_DIR: ${{ github.workspace }}/qt-src
+        # 可选：显式指定 clang-14（若后续构建报 clang 版本问题，取消注释下方两行）
+        # CLANG_EXECUTABLE: /usr/bin/clang-14
+        # LLVM_CONFIG: /usr/bin/llvm-config-14
       run: |
         python setup.py build \
           --build-docs \
@@ -83,7 +87,7 @@ jobs:
           elif [ -f Makefile ]; then
             make apidoc
           else
-            echo "❌ No build system files found for API documentation"
+            echo "❌ No build system files (ninja/Makefile) found for API documentation"
             ls -la .
             exit 1
           fi
@@ -101,13 +105,13 @@ jobs:
           echo "✅ Documentation built successfully!"
           echo "📊 Size: $(du -sh "$DOC_PATH" | cut -f1)"
         else
-          echo "❌ Documentation build failed"
-          find pyside-setup/build -type f -name "*.html" -path "*/doc/*" | head -n 10 || true
+          echo "❌ Documentation build failed: $DOC_PATH/index.html missing"
+          find pyside-setup/build -name "*.html" -path "*/doc/*" | head -n 10 || true
           exit 1
         fi
 
     - name: Upload documentation artifact
-      uses: actions/upload-artifact@v4  # ✅ 已修正：v3 → v4
+      uses: actions/upload-artifact@v4  # ✅ 已升级至 v4（符合 2025-01-30 强制要求）
       with:
         name: pyside6-full-documentation
         path: pyside-setup/build/pyside6/doc/html/
