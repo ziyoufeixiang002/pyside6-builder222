@@ -1,239 +1,215 @@
-name: Build PySide6 Documentation (Base + API) - Use Correct Qt Module Name
+name: Build PySide6 6.10 Full Documentation (Base + API)
 
 on:
-  push:
-    branches: [ main ] # 或者您希望触发构建的分支
-  pull_request:
-    branches: [ main ] # 或者您希望触发构建的分支
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch:
+  # push:
+  #   branches: [ main ]
+
+permissions:
+  contents: read
+  actions: write  # for cache
 
 jobs:
   build-docs:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    env:
+      QT_VERSION: "6.10.0"
+      QT_SRC_ARCHIVE: "qt-everywhere-src-${{ env.QT_VERSION }}.tar.xz"
+      # 官方源（主）
+      QT_SRC_URL_OFFICIAL: "https://download.qt.io/official_releases/qt/${{ env.QT_VERSION%.* }}/${{ env.QT_VERSION }}/single/${{ env.QT_SRC_ARCHIVE }}"
+      # 镜像源（fallback）
+      QT_SRC_URL_TUNA: "https://mirrors.tuna.tsinghua.edu.cn/qt/archive/qt/${{ env.QT_VERSION%.* }}/${{ env.QT_VERSION }}/single/${{ env.QT_SRC_ARCHIVE }}"
+      QT_SRC_URL_USTC: "https://mirrors.ustc.edu.cn/qtproject/archive/qt/${{ env.QT_VERSION%.* }}/${{ env.QT_VERSION }}/single/${{ env.QT_SRC_ARCHIVE }}"
+      # 私有 Release 源（需提前上传到本 repo 的 Release，如 v6.10.0-assets）
+      QT_SRC_RELEASE_TAG: "v6.10.0-assets"
+      PYSIDE_REPO: "https://github.com/pyside/pyside-setup.git"
+      PYSIDE_TAG: "v6.10.0"
+      PYTHON_VERSION: "3.11"
 
     steps:
-    - name: Checkout PySide6 Setup Repository
-      uses: actions/checkout@v4
-      with:
-        repository: pyside/pyside-setup
-        path: pyside-setup
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    # --- 安装系统依赖 ---
-    - name: Install System Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake git libclang-dev libxml2-dev libxslt1-dev python3-dev graphviz libgl1-mesa-dev libxcb-cursor-dev libxcb-xinerama0-dev libxcb-randr0-dev libxcb-xtest0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
-    # --- 设置 Python 环境 ---
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build \
+            libxml2-dev libxslt1-dev \
+            libgl1-mesa-dev libegl1-mesa-dev \
+            graphviz libgraphviz-dev \
+            wget tar xz-utils
 
-    # --- 安装 aqtinstall ---
-    - name: Install aqtinstall
-      run: |
-        python -m pip install aqtinstall
+      - name: Cache Qt source
+        id: cache-qt-src
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.QT_SRC_ARCHIVE }}
+          key: qt-src-${{ env.QT_VERSION }}-v2  # ← v2: avoid stale cache
 
-    # --- 列出可用的 Qt 版本和架构 ---
-    - name: List Available Qt Versions and Architectures
-      run: |
-        echo "Listing available architectures for Qt 6.8.0 on linux desktop..."
-        aqt list-qt linux desktop --arch 6.8.0 || echo "Command failed or no arch found for 6.8.0"
-        echo "Listing available modules for Qt 6.8.0 gcc_64..."
-        # 尝试列出模块，这很可能会失败，因为我们知道 'qtbase' 不存在
-        aqt list-qt linux desktop --modules 6.8.0 gcc_64 || echo "Command failed or no modules found for 6.8.0 gcc_64. This confirms 'qtbase' is not a module name."
-        # 尝试列出更基础的模块，有时可能没有 --modules 标志，直接列出所有包
-        echo "Attempting to list all packages for 6.8.0 gcc_64 (this might show different names)..."
-        # aqtinstall 有时通过尝试安装并列出错误信息来显示可用包
-        # 直接尝试安装一个可能的名称，如 'qt5-base' 在 Qt5 中，但 Qt6 可能不同
-        # 或者尝试 'qt-everywhere-src' 对应的二进制包，但通常没有这个
-        # 最常见的还是 'qtbase'，但显然 aqtinstall 在 6.8.0 这个版本上找不到它
-        # 让我们尝试不带 -m 参数，看看是否是 'qt-<version>-src' 对应的二进制安装方式有误
-        # 通常，对于二进制安装，我们确实需要 -m
-        # 另一个可能性是 aqtinstall 的缓存或索引有问题，或者 6.8.0 还没完全准备好
-        # 让我们尝试一个更早一点的稳定版本，比如 6.7.3 或 6.6.3
-        # 但首先，我们再次尝试安装 'qtbase'，看是否是之前的缓存问题
-        # NO, we already know 'qtbase' doesn't work. Let's try a different common name or a different version.
-        # 查看是否有类似 'qt-<version>-gcc_64' 这样的包名 (通常没有)
-        # 或者检查 aqtinstall 是否能提供更通用的包名
-        # 根据 aqtinstall 的设计，它通常映射到官方在线安装程序的组件
-        # 我们可以尝试 'qtcore', 'qtgui' 等，但通常需要一个基础包
-        # 最后，我们尝试一个已知的早期版本，如 6.7.1 或 6.6.3，看看是否能绕过 6.8.0 的问题
-        # 但是，让我们先尝试安装 'qtdeclarative' 作为核心模块的一部分，如果这也不行，问题可能更深
-        # NO, let's stick to finding the correct base module name for 6.8.0.
-        # The error message suggests the name might be different or not available as a single module.
-        # Let's try installing without any modules specified again, but this time we will *not* rely on it working.
-        # The documentation for aqtinstall suggests that for Qt6, you might need to specify essential modules.
-        # Let's try installing 'qtbase' using the 'extras' path if it exists, or find the correct name.
-        # Common core components in Qt6 might be bundled differently.
-        # Let's assume the name might be slightly different or not listed as 'qtbase'.
-        # For now, let's try a different, known stable version: 6.6.3
-        # echo "Trying a different, known stable version: 6.6.3"
-        # aqt list-qt linux desktop --modules 6.6.3 gcc_64 || echo "Modules for 6.6.3 also failed or not found."
-        # It seems the best path forward is to find the *exact* module name for 6.8.0.
-        # Let's try a different approach: Install Qt using the 'tool' command if it provides the base tools needed, or
-        # rely on the fact that 'aqtinstall' *should* have a way to install the base development kit.
-        # Re-running the modules command might give different output now that the index is potentially cached.
-        # Let's re-run the modules command for 6.8.0
-        echo "Re-running modules command for 6.8.0 gcc_64 to see if index was updated..."
-        aqt list-qt linux desktop --modules 6.8.0 gcc_64 2>&1 | grep -i "base\|core\|essential\|dev\|tools" || echo "No obvious base/essential modules found in list output or command failed again."
+      - name: Download Qt source (try: cache → official → mirrors → private release)
+        if: steps.cache-qt-src.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          echo "Qt source not cached. Attempting downloads..."
 
-    # --- 安装 Qt (尝试一个可能正确的模块名，或使用一个已知兼容的旧版本) ---
-    # 由于 6.8.0 的 qtbase 失败，我们尝试一个更早的、已知与 pyside6 兼容的版本，例如 6.7.1 或 6.6.3
-    # 或者，如果 list-qt 给出了可用的模块名，则使用该名称
-    - name: Install Qt SDK (Stable Version 6.6.3)
-      env:
-        # 使用一个更早的稳定版本，以避免 6.8.0 可能存在的 aqtinstall 包定义问题
-        # 请根据您的 pyside-setup 版本选择兼容的 Qt 版本
-        QT_VERSION: "6.6.3" # 选择一个更稳定的版本
-        QT_HOST: "linux"
-        QT_TARGET: "desktop"
-        QT_ARCH: "gcc_64"
-      run: |
-        python -m pip install aqtinstall # 确保 aqtinstall 在当前步骤的 PATH 中
-        echo "Attempting to install Qt $QT_VERSION $QT_ARCH for $QT_TARGET on $QT_HOST (using stable version)..."
-        # 尝试安装 qtbase 模块 (对于 6.6.3 版本，这个模块名通常存在)
-        aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION $QT_ARCH --outputdir ./Qt -m qtbase
-        # 如果上面的命令失败，取消下面命令的注释，并注释掉上面的命令
-        # aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION $QT_ARCH --outputdir ./Qt
-        # 将 Qt 工具添加到 PATH
-        echo "${{ github.workspace }}/Qt/$QT_VERSION/$QT_ARCH/bin" >> $GITHUB_PATH
-        # 设置环境变量
-        echo "QT_DIR=${{ github.workspace }}/Qt/$QT_VERSION/$QT_ARCH" >> $GITHUB_ENV
-        echo "QT_VERSION=$QT_VERSION" >> $GITHUB_ENV
-        echo "QT_ARCH=$QT_ARCH" >> $GITHUB_ENV
+          # Try 1: official
+          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_OFFICIAL }}" -O "${{ env.QT_SRC_ARCHIVE }}.part"; then
+            mv "${{ env.QT_SRC_ARCHIVE }}.part" "${{ env.QT_SRC_ARCHIVE }}"
+            echo "✅ Downloaded from official source"
+            exit 0
+          else
+            echo "⚠️ Official source failed. Trying mirrors..."
+          fi
 
-    # --- 验证 Qt 安装 ---
-    - name: Verify Qt Installation
-      run: |
-        echo "QT_DIR is: $QT_DIR"
-        echo "Looking for qtpaths6..."
-        which qtpaths6
-        if [ $? -ne 0 ]; then
-            echo "ERROR: qtpaths6 not found in PATH."
-            ls -la $QT_DIR/bin/
+          # Try 2: TUNA
+          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_TUNA }}" -O "${{ env.QT_SRC_ARCHIVE }}.part"; then
+            mv "${{ env.QT_SRC_ARCHIVE }}.part" "${{ env.QT_SRC_ARCHIVE }}"
+            echo "✅ Downloaded from TUNA mirror"
+            exit 0
+          fi
+
+          # Try 3: USTC
+          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_USTC }}" -O "${{ env.QT_SRC_ARCHIVE }}.part"; then
+            mv "${{ env.QT_SRC_ARCHIVE }}.part" "${{ env.QT_SRC_ARCHIVE }}"
+            echo "✅ Downloaded from USTC mirror"
+            exit 0
+          fi
+
+          # Try 4: Private Release Asset (requires gh CLI & token)
+          echo "⚠️ All mirrors failed. Trying private Release asset..."
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+          if gh release download ${{ env.QT_SRC_RELEASE_TAG }} \
+               --repo "$GITHUB_REPOSITORY" \
+               -p "${{ env.QT_SRC_ARCHIVE }}" 2>/dev/null; then
+            echo "✅ Downloaded from private Release: ${{ env.QT_SRC_RELEASE_TAG }}"
+            exit 0
+          fi
+
+          echo "❌ Failed to download Qt source from all sources."
+          ls -lh
+          exit 1
+
+      - name: Verify Qt archive integrity (optional but recommended)
+        run: |
+          # 若你有 SHA256SUMS 文件，可提前上传为 artifact 或 hardcode
+          # 示例：已知 qt-everywhere-src-6.10.0.tar.xz 的 SHA256
+          EXPECTED_SHA256="a0e3e7b3e6b3f3e2a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5"  # ← ✏️ 替换为真实值！
+          ACTUAL_SHA256=$(sha256sum "${{ env.QT_SRC_ARCHIVE }}" | cut -d' ' -f1)
+          if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+            echo "❌ SHA256 mismatch!"
+            echo "Expected: $EXPECTED_SHA256"
+            echo "Actual:   $ACTUAL_SHA256"
             exit 1
-        fi
-        echo "Looking for CMake config files..."
-        find $QT_DIR -name "Qt6CoreConfig.cmake" -type f | head -n 5
-        if [ $? -ne 0 ]; then
-            echo "ERROR: Qt6CoreConfig.cmake or similar not found."
-            find $QT_DIR/lib/cmake -name "Qt6*" -type f | head -n 10
-            exit 1
-        fi
-        echo "Qt installation seems OK."
+          else
+            echo "✅ SHA256 verified"
+          fi
 
-    # --- 升级并固定核心构建工具版本 ---
-    - name: Upgrade and Pin Core Build Tools
-      working-directory: ./pyside-setup
-      run: |
-        python -m pip install --upgrade pip setuptools wheel==0.42.0
+      - name: Extract Qt source
+        run: |
+          echo "Extracting Qt source..."
+          mkdir -p qt-src
+          time tar -xf "${{ env.QT_SRC_ARCHIVE }}" -C qt-src --strip-components=1
+          echo "✅ Extraction done."
 
-    # --- 安装 Python 依赖 ---
-    - name: Install Python Documentation Requirements
-      working-directory: ./pyside-setup
-      run: |
-        python -m pip install --upgrade setuptools wheel==0.42.0
-        if [ -f requirements-doc.txt ]; then
-            echo "Installing requirements from requirements-doc.txt..."
-            python -m pip install -r requirements-doc.txt
-        else
-            echo "requirements-doc.txt not found. Installing minimal set for documentation."
-            python -m pip install sphinx sphinx-rtd-theme
-        fi
+      - name: Clone PySide6 setup repo at tag
+        run: |
+          git clone --depth 1 --branch ${{ env.PYSIDE_TAG }} ${{ env.PYSIDE_REPO }} pyside-setup
 
-    # --- 获取 Qt 源码 (用于文档构建) ---
-    # 重要：这里的版本必须与安装的 Qt 版本一致！
-    - name: Get Qt Source Code (for docs - Match Installed Version)
-      env:
-        QT_VERSION: "6.6.3" # 必须与上面安装的版本一致！
-      run: |
-        # 克隆包含 Qt6.x 分支的仓库，而不是 qt5
-        git clone --filter=blob:none --sparse https://github.com/qt/qt5.git qt6_src
-        cd qt6_src
-        git sparse-checkout set --no-cone qtbase # 只检出 qtbase 目录以节省空间
-        # 检出与安装的 Qt 版本匹配的源码
-        git fetch --all --tags
-        # 列出最新的几个 6.x 标签供参考（可选）
-        echo "Fetching available 6.x tags..."
-        git tag -l | grep -E "^v?[0-9]+\.6\.[0-9]+$" | sort -V | tail -5 || echo "No 6.x tags found or command failed"
-        QT_TAG="v$QT_VERSION" # 使用环境变量中的版本号
-        echo "Checking out Qt source tag: $QT_TAG"
-        git checkout tags/$QT_TAG -b qt-$QT_VERSION
-        # 由于使用了 sparse-checkout，qtbase 子模块可能已经包含，或者需要单独初始化
-        # git submodule update --init --depth 1 qtbase # 如果需要，取消注释
+      - name: Install Python doc build requirements
+        run: |
+          cd pyside-setup
+          pip install -r requirements-doc.txt
 
-    # --- 构建 Shiboken 和 PySide6 (包含文档) - 明确指定 Qt 路径 ---
-    - name: Build Shiboken and PySide6 (with Docs) - Explicit Qt Path
-      working-directory: ./pyside-setup
-      env:
-        # 确保环境变量被传递
-        QT_DIR: ${{ env.QT_DIR }}
-        QT_VERSION: ${{ env.QT_VERSION }}
-        QT_ARCH: ${{ env.QT_ARCH }}
-      run: |
-        echo "QT_DIR: $QT_DIR"
-        echo "QT_VERSION: $QT_VERSION"
-        echo "QT_ARCH: $QT_ARCH"
-        # 确认 Qt 工具在 PATH 中
-        QTPATHS_PATH=$(which qtpaths6)
-        echo "qtpaths6 found at: $QTPATHS_PATH"
-        # 检查 qtpaths6 输出
-        echo "qtpaths6 --query QT_VERSION output:"
-        $QTPATHS_PATH --query QT_VERSION
-        # 执行构建命令，明确指定 qtpaths6 路径和 Qt 源码路径
-        # 注意：--qt-src-dir 指向上面获取的源码目录
-        python setup.py build \
-          --build-type=all \
-          --parallel 2 \
-          --build-docs \
-          --qtpaths="$QTPATHS_PATH" \
-          --qt-src-dir=../qt6_src
+      - name: Set up virtual environment
+        run: |
+          python -m venv venv-docs
+          source venv-docs/bin/activate
+          pip install -U pip
+          pip install -r pyside-setup/requirements-doc.txt
 
-
-    # --- 尝试运行 ninja apidoc (如果 setup.py build 未完成) ---
-    - name: Run Ninja API Doc Build (if needed)
-      working-directory: ./pyside-setup
-      run: |
-        PYSIDE_BUILD_DIR=$(find build -maxdepth 3 -name "pyside6" -type d -path "*/build/*" | head -n 1)
-        SHIBOKEN_BUILD_DIR=$(find build -maxdepth 3 -name "shiboken6" -type d -path "*/build/*" | head -n 1)
-
-        echo "PySide6 Build Dir Candidate: $PYSIDE_BUILD_DIR"
-        echo "Shiboken6 Build Dir Candidate: $SHIBOKEN_BUILD_DIR"
-
-        if [ -n "$PYSIDE_BUILD_DIR" ] && [ -d "$PYSIDE_BUILD_DIR" ]; then
-            echo "Found PySide6 build directory: $PYSIDE_BUILD_DIR"
-            cd "$PYSIDE_BUILD_DIR"
-            if [ -f "build.ninja" ]; then
-                echo "build.ninja found, running: ninja apidoc -j 2"
-                ninja apidoc -j 2
-            else
-                echo "build.ninja NOT found in $PYSIDE_BUILD_DIR."
-                ls -la
+      - name: Ensure qdoc is available (install system Qt dev tools as fallback)
+        run: |
+          # 尝试 locate qdoc6/qdoc
+          if command -v qdoc6 >/dev/null 2>&1; then
+            echo "✅ qdoc6 found in PATH"
+          elif command -v qdoc >/dev/null 2>&1; then
+            echo "✅ qdoc found in PATH"
+          else
+            echo "⚠️ qdoc not found; installing qt6-base-dev-tools..."
+            sudo apt-get install -y qt6-base-dev-tools
+            if ! command -v qdoc6 >/dev/null 2>&1; then
+              echo "❌ qdoc6 still missing after install"
+              exit 1
             fi
-        else
-            echo "PySide6 build directory NOT FOUND."
-            find build -type d -name "*" | head -20
-        fi
+          fi
 
-        if [ -n "$SHIBOKEN_BUILD_DIR" ] && [ -d "$SHIBOKEN_BUILD_DIR" ]; then
-            echo "Found Shiboken6 build directory: $SHIBOKEN_BUILD_DIR"
-            cd "$SHIBOKEN_BUILD_DIR"
-            if [ -f "build.ninja" ]; then
-                 echo "Shiboken6 build.ninja exists."
-            fi
-        fi
+      - name: Build PySide6 + Documentation
+        run: |
+          source venv-docs/bin/activate
+          cd pyside-setup
 
-    # --- 上传文档工件 ---
-    - name: Upload Documentation Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: PySide6-Docs-Base-API-CorrectQtModule-663
-        path: |
-          pyside-setup/build/*/build/*/doc/html
-          pyside-setup/build/*/build/*/PySide.qch
-          pyside-setup/build/*/build/*/Shiboken.qch
-        if-no-files-found: warn
-        retention-days: 30
+          python setup.py build \
+            --build-type=all \
+            --module-subset=Core,Gui,Widgets \
+            --qt-src-dir="${{ github.workspace }}/qt-src" \
+            --build-docs \
+            --doc-build-online \
+            --skip-make-install \
+            --skip-packaging \
+            --verbose-build
+
+      - name: Build API documentation via ninja
+        run: |
+          source venv-docs/bin/activate
+          BUILD_DIR=$(find . -name "build" -type d -not -path "*/\.*" | grep -E "build.*${{ env.PYTHON_VERSION }}" | head -n1 || echo "./build")
+          echo "Using build dir: $BUILD_DIR"
+          cd "$BUILD_DIR/pyside6" || { echo "pyside6 build dir not found"; exit 1; }
+          ninja apidoc -j $(nproc)
+
+      - name: Collect artifacts
+        run: |
+          source venv-docs/bin/activate
+          mkdir -p artifacts/{html,qch}
+
+          HTML_DIR=$(find . -path "*/pyside6/doc/html" -type d | head -n1)
+          SHIBOKEN_HTML_DIR=$(find . -path "*/shiboken6/doc/html" -type d | head -n1)
+          QCH_FILES=$(find . -name "*.qch" -type f)
+
+          [ -d "$HTML_DIR" ] && cp -r "$HTML_DIR"/* artifacts/html/ 2>/dev/null || echo "⚠️ PySide6 HTML not found"
+          [ -d "$SHIBOKEN_HTML_DIR" ] && cp -r "$SHIBOKEN_HTML_DIR"/* artifacts/html/shiboken6/ 2>/dev/null || echo "⚠️ Shiboken HTML not found"
+          [ -n "$QCH_FILES" ] && cp $QCH_FILES artifacts/qch/ 2>/dev/null || echo "⚠️ No QCH files found"
+
+          cat > artifacts/index.html <<EOF
+<!DOCTYPE html>
+<html><head><title>PySide6 6.10 Docs</title></head><body>
+<h1>PySide6 6.10 Documentation</h1>
+<ul>
+  <li><a href="html/pyside6/index.html">📖 HTML (PySide6)</a></li>
+  <li><a href="html/shiboken6/index.html">📖 HTML (Shiboken)</a></li>
+  <li><a href="qch/">📦 QCH Files</a> (use with Qt Assistant)</li>
+</ul>
+<p><small>Generated on: $(date -u)</small></p>
+</body></html>
+EOF
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyside6-docs-full
+          path: artifacts/
+          retention-days: 30
+
+      - name: Optional: Deploy to GitHub Pages
+        if: ${{ github.ref == 'refs/heads/main' && false }}  # ← set to `true` to enable
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: artifacts
+          publish_branch: gh-pages
+          force_orphan: true
