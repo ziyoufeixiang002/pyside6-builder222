@@ -15,217 +15,17 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
-    - name: Checkout repository (for storing scripts)
+    - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+    - name: Install wget
+      run: sudo apt-get update && sudo apt-get install -y wget
         
-    - name: Install web scraping tools
+    - name: Download PySide6 documentation using wget
       run: |
-        python -m pip install --upgrade pip
-        pip install requests beautifulsoup4 httpx
-        
-    - name: Create focused documentation download script
-      run: |
-        cat > download_docs.py << 'EOF'
-        import os
-        import requests
-        from bs4 import BeautifulSoup
-        import time
-        import urllib.parse
-        from urllib.parse import urljoin, urlparse
-        
-        BASE_URL = os.environ.get('DOCS_BASE_URL', 'https://doc.qt.io/qtforpython-6')
-        VERSION = os.environ.get('PYSIDE_VERSION', '6.10.0')
-        OUTPUT_DIR = 'pyside6-docs'
-        
         # 创建输出目录
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        mkdir -p pyside6-docs
         
-        # 主要模块列表
-        modules = [
-            'PySide6', 'QtCore', 'QtGui', 'QtWidgets', 'QtNetwork', 
-            'QtQml', 'QtQuick', 'QtQuickControls2', 'QtQuickWidgets',
-            'QtWebEngine', 'QtWebEngineCore', 'QtWebEngineWidgets',
-            'QtMultimedia', 'QtMultimediaWidgets', 'QtSql', 'QtTest',
-            'QtXml', 'QtSvg', 'QtCharts', 'QtDataVisualization',
-            'QtBluetooth', 'QtPositioning', 'QtWebChannel', 'QtWebSockets',
-            'Qt3DCore', 'Qt3DRender', 'Qt3DInput', 'Qt3DLogic', 'Qt3DAnimation',
-            'Qt3DExtras', 'Shiboken6'
-        ]
-        
-        def is_pyside6_url(url):
-            """检查URL是否与PySide6相关"""
-            parsed_url = urlparse(url)
-            path = parsed_url.path.lower()
-            
-            # 只处理包含以下关键词的URL
-            pyside_keywords = ['qtforpython-6', 'pyside6', 'shiboken6']
-            for keyword in pyside_keywords:
-                if keyword in path:
-                    return True
-            return False
-        
-        def download_page(url, filepath):
-            """下载单个页面"""
-            try:
-                # 检查URL是否与PySide6相关
-                if not is_pyside6_url(url):
-                    print(f"⚠ 跳过非PySide6页面: {url}")
-                    return False
-                    
-                response = requests.get(url, timeout=30)
-                if response.status_code == 200:
-                    # 保存HTML文件
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        f.write(response.text)
-                    print(f"✓ 下载成功: {filepath}")
-                    return True
-                else:
-                    print(f"✗ 下载失败 {response.status_code}: {url}")
-                    return False
-            except Exception as e:
-                print(f"✗ 错误下载 {url}: {e}")
-                return False
-        
-        def get_module_urls(module):
-            """获取模块的所有页面URL"""
-            urls = []
-            
-            # 模块主页
-            urls.append(f"{BASE_URL}/{module}/index.html")
-            
-            # 类列表页
-            urls.append(f"{BASE_URL}/{module}/classes.html")
-            
-            # 根据模块类型添加特定页面
-            if module == 'PySide6':
-                urls.extend([
-                    f"{BASE_URL}/PySide6/gettingstarted.html",
-                    f"{BASE_URL}/PySide6/tutorials.html",
-                    f"{BASE_URL}/PySide6/examples.html"
-                ])
-            
-            return urls
-        
-        def extract_internal_links(html_content, base_url):
-            """从HTML内容中提取内部链接"""
-            soup = BeautifulSoup(html_content, 'html.parser')
-            links = []
-            
-            for link in soup.find_all('a', href=True):
-                href = link['href']
-                full_url = urljoin(base_url, href)
-                
-                # 只保留与PySide6相关的内部链接
-                if is_pyside6_url(full_url) and full_url.startswith(BASE_URL):
-                    links.append(full_url)
-            
-            return list(set(links))  # 去重
-        
-        print("开始下载 PySide6 文档...")
-        
-        # 首先下载主要页面
-        all_urls = set()
-        for module in modules:
-            print(f"\n=== 处理模块: {module} ===")
-            module_urls = get_module_urls(module)
-            all_urls.update(module_urls)
-        
-        # 递归下载相关链接
-        max_depth = 2  # 限制递归深度以避免下载过多页面
-        downloaded_urls = set()
-        
-        def download_recursive(urls, depth=0):
-            if depth >= max_depth:
-                return
-                
-            new_urls = set()
-            for url in urls:
-                if url in downloaded_urls:
-                    continue
-                    
-                # 确定文件保存路径
-                parsed_url = urlparse(url)
-                relative_path = parsed_url.path.lstrip('/')
-                if not relative_path:
-                    relative_path = 'index.html'
-                
-                filepath = os.path.join(OUTPUT_DIR, relative_path)
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                
-                if download_page(url, filepath):
-                    downloaded_urls.add(url)
-                    
-                    # 读取下载的HTML内容并提取链接
-                    try:
-                        with open(filepath, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        
-                        # 提取内部链接
-                        internal_links = extract_internal_links(content, url)
-                        new_urls.update(internal_links)
-                        
-                    except Exception as e:
-                        print(f"⚠ 无法解析链接从 {filepath}: {e}")
-                
-                # 添加延迟避免被封锁
-                time.sleep(0.5)
-            
-            # 递归下载新发现的链接
-            if new_urls:
-                download_recursive(new_urls, depth + 1)
-        
-        # 开始递归下载
-        download_recursive(all_urls)
-        
-        # 创建索引页面
-        index_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>PySide6 {VERSION} Documentation</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 40px; }}
-                h1 {{ color: #333; }}
-                ul {{ list-style-type: none; padding: 0; }}
-                li {{ margin: 10px 0; }}
-                a {{ text-decoration: none; color: #0066cc; }}
-                a:hover {{ text-decoration: underline; }}
-            </style>
-        </head>
-        <body>
-            <h1>PySide6 {VERSION} Documentation</h1>
-            <p>离线文档下载于: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
-            <ul>
-        """
-        
-        for module in modules:
-            index_content += f'<li><a href="{module}/index.html">{module} Documentation</a></li>\n'
-        
-        index_content += """
-            </ul>
-            <p><em>Note: This is a focused mirror containing only PySide6 related documentation.</em></p>
-        </body>
-        </html>
-        """
-        
-        with open(os.path.join(OUTPUT_DIR, 'index.html'), 'w', encoding='utf-8') as f:
-            f.write(index_content)
-        
-        print(f"\n文档下载完成! 共下载 {len(downloaded_urls)} 个页面")
-        print(f"保存在目录: {OUTPUT_DIR}")
-        EOF
-        
-    - name: Run focused documentation downloader
-      run: |
-        python download_docs.py
-        
-    - name: Use wget for focused mirroring
-      run: |
         # 使用wget进行聚焦镜像，只下载PySide6相关内容
         wget --mirror \
              --convert-links \
@@ -234,23 +34,53 @@ jobs:
              --no-parent \
              --no-host-directories \
              --restrict-file-names=windows \
-             --reject-regex=".*\.svg,.*\.png,.*\.jpg,.*\.gif" \
+             --reject-regex=".*\.(svg|png|jpg|jpeg|gif|ico|bmp|webp|tiff|psd|ai|eps|raw|mp4|avi|mov|wmv|flv|mkv|webm|m4v|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|wma|m4a|aiff|pcm|midi)$" \
              --accept-regex=".*qtforpython-6.*|.*pyside6.*|.*shiboken6.*" \
              --wait=1 \
              --random-wait \
              --limit-rate=1M \
+             --timeout=30 \
+             --tries=3 \
              -e robots=off \
              --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-             --directory-prefix=pyside6-wget-docs \
+             --directory-prefix=pyside6-docs \
+             --level=5 \
              "$DOCS_BASE_URL" || echo "wget镜像完成或有部分错误"
+        
+        echo "wget下载完成"
+        
+    - name: Create index page
+      run: |
+        # 创建简单的索引页面
+        cat > pyside6-docs/index.html << EOF
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>PySide6 $PYSIDE_VERSION Documentation</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; }
+                h1 { color: #333; }
+                ul { list-style-type: none; padding: 0; }
+                li { margin: 10px 0; }
+                a { text-decoration: none; color: #0066cc; }
+                a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <h1>PySide6 $PYSIDE_VERSION Documentation</h1>
+            <p>离线文档下载于: $(date)</p>
+            <p><a href="qtforpython-6/index.html">查看完整文档</a></p>
+            <p><em>Note: This is a focused mirror containing only PySide6 related documentation.</em></p>
+            <p><strong>Filtered resources:</strong> Images, videos, audio files and icons have been excluded to reduce download size.</p>
+        </body>
+        </html>
+        EOF
         
     - name: Archive downloaded documentation
       uses: actions/upload-artifact@v4
       with:
         name: pyside6-offline-docs
-        path: |
-          pyside6-docs/
-          pyside6-wget-docs/
+        path: pyside6-docs/
         retention-days: 90
         
     - name: Create documentation summary
@@ -261,17 +91,22 @@ jobs:
         echo "**PySide6 版本:** ${{ env.PYSIDE_VERSION }}" >> $GITHUB_STEP_SUMMARY
         echo "**源网址:** ${{ env.DOCS_BASE_URL }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**下载策略:**" >> $GITHUB_STEP_SUMMARY
-        echo "- 只下载包含 'qtforpython-6', 'pyside6', 'shiboken6' 的页面" >> $GITHUB_STEP_SUMMARY
-        echo "- 限制递归深度为2层" >> $GITHUB_STEP_SUMMARY
-        echo "- 跳过图片等非必要资源" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
         echo "**下载方法:**" >> $GITHUB_STEP_SUMMARY
-        echo "- Python脚本递归下载" >> $GITHUB_STEP_SUMMARY
-        echo "- wget聚焦镜像" >> $GITHUB_STEP_SUMMARY
+        echo "- wget聚焦镜像（只下载PySide6相关内容）" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**过滤的资源:**" >> $GITHUB_STEP_SUMMARY
+        echo "- 图片文件: svg, png, jpg, jpeg, gif, ico, bmp, webp, tiff, psd, ai, eps, raw" >> $GITHUB_STEP_SUMMARY
+        echo "- 视频文件: mp4, avi, mov, wmv, flv, mkv, webm, m4v, mpg, mpeg, 3gp" >> $GITHUB_STEP_SUMMARY
+        echo "- 音频文件: mp3, wav, flac, aac, ogg, wma, m4a, aiff, pcm, midi" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**下载设置:**" >> $GITHUB_STEP_SUMMARY
+        echo "- 只接受包含 'qtforpython-6', 'pyside6', 'shiboken6' 的URL" >> $GITHUB_STEP_SUMMARY
+        echo "- 递归深度: 5层" >> $GITHUB_STEP_SUMMARY
+        echo "- 限速: 1MB/s" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
         # 统计下载的文件数量
         echo "**文件统计:**" >> $GITHUB_STEP_SUMMARY
-        echo "- Python脚本: $(find pyside6-docs -name '*.html' | wc -l) 个HTML文件" >> $GITHUB_STEP_SUMMARY
-        echo "- wget镜像: $(find pyside6-wget-docs -name '*.html' | wc -l) 个HTML文件" >> $GITHUB_STEP_SUMMARY
+        echo "- HTML文件: $(find pyside6-docs -name '*.html' | wc -l) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- 总文件数: $(find pyside6-docs -type f | wc -l) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- 目录大小: $(du -sh pyside6-docs | cut -f1)" >> $GITHUB_STEP_SUMMARY
