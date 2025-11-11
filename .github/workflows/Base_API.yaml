@@ -26,14 +26,9 @@ jobs:
     - name: Install web scraping tools
       run: |
         python -m pip install --upgrade pip
-        pip install requests beautifulsoup4 httpx playwright
+        pip install requests beautifulsoup4 httpx
         
-    - name: Install browser for JavaScript rendering
-      run: |
-        python -m playwright install chromium
-        python -m playwright install-deps
-        
-    - name: Create documentation download script
+    - name: Create focused documentation download script
       run: |
         cat > download_docs.py << 'EOF'
         import os
@@ -41,6 +36,7 @@ jobs:
         from bs4 import BeautifulSoup
         import time
         import urllib.parse
+        from urllib.parse import urljoin, urlparse
         
         BASE_URL = os.environ.get('DOCS_BASE_URL', 'https://doc.qt.io/qtforpython-6')
         VERSION = os.environ.get('PYSIDE_VERSION', '6.10.0')
@@ -61,9 +57,26 @@ jobs:
             'Qt3DExtras', 'Shiboken6'
         ]
         
+        def is_pyside6_url(url):
+            """检查URL是否与PySide6相关"""
+            parsed_url = urlparse(url)
+            path = parsed_url.path.lower()
+            
+            # 只处理包含以下关键词的URL
+            pyside_keywords = ['qtforpython-6', 'pyside6', 'shiboken6']
+            for keyword in pyside_keywords:
+                if keyword in path:
+                    return True
+            return False
+        
         def download_page(url, filepath):
             """下载单个页面"""
             try:
+                # 检查URL是否与PySide6相关
+                if not is_pyside6_url(url):
+                    print(f"⚠ 跳过非PySide6页面: {url}")
+                    return False
+                    
                 response = requests.get(url, timeout=30)
                 if response.status_code == 200:
                     # 保存HTML文件
@@ -98,41 +111,95 @@ jobs:
             
             return urls
         
+        def extract_internal_links(html_content, base_url):
+            """从HTML内容中提取内部链接"""
+            soup = BeautifulSoup(html_content, 'html.parser')
+            links = []
+            
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                full_url = urljoin(base_url, href)
+                
+                # 只保留与PySide6相关的内部链接
+                if is_pyside6_url(full_url) and full_url.startswith(BASE_URL):
+                    links.append(full_url)
+            
+            return list(set(links))  # 去重
+        
         print("开始下载 PySide6 文档...")
         
-        # 下载每个模块的文档
+        # 首先下载主要页面
+        all_urls = set()
         for module in modules:
             print(f"\n=== 处理模块: {module} ===")
-            module_dir = os.path.join(OUTPUT_DIR, module)
-            os.makedirs(module_dir, exist_ok=True)
-            
-            urls = get_module_urls(module)
+            module_urls = get_module_urls(module)
+            all_urls.update(module_urls)
+        
+        # 递归下载相关链接
+        max_depth = 2  # 限制递归深度以避免下载过多页面
+        downloaded_urls = set()
+        
+        def download_recursive(urls, depth=0):
+            if depth >= max_depth:
+                return
+                
+            new_urls = set()
             for url in urls:
-                filename = url.split('/')[-1]
-                filepath = os.path.join(module_dir, filename)
-                download_page(url, filepath)
+                if url in downloaded_urls:
+                    continue
+                    
+                # 确定文件保存路径
+                parsed_url = urlparse(url)
+                relative_path = parsed_url.path.lstrip('/')
+                if not relative_path:
+                    relative_path = 'index.html'
+                
+                filepath = os.path.join(OUTPUT_DIR, relative_path)
+                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                
+                if download_page(url, filepath):
+                    downloaded_urls.add(url)
+                    
+                    # 读取下载的HTML内容并提取链接
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        # 提取内部链接
+                        internal_links = extract_internal_links(content, url)
+                        new_urls.update(internal_links)
+                        
+                    except Exception as e:
+                        print(f"⚠ 无法解析链接从 {filepath}: {e}")
                 
                 # 添加延迟避免被封锁
-                time.sleep(1)
+                time.sleep(0.5)
+            
+            # 递归下载新发现的链接
+            if new_urls:
+                download_recursive(new_urls, depth + 1)
+        
+        # 开始递归下载
+        download_recursive(all_urls)
         
         # 创建索引页面
-        index_content = """
+        index_content = f"""
         <!DOCTYPE html>
         <html>
         <head>
-            <title>PySide6 $VERSION Documentation</title>
+            <title>PySide6 {VERSION} Documentation</title>
             <style>
-                body { font-family: Arial, sans-serif; margin: 40px; }
-                h1 { color: #333; }
-                ul { list-style-type: none; padding: 0; }
-                li { margin: 10px 0; }
-                a { text-decoration: none; color: #0066cc; }
-                a:hover { text-decoration: underline; }
+                body {{ font-family: Arial, sans-serif; margin: 40px; }}
+                h1 {{ color: #333; }}
+                ul {{ list-style-type: none; padding: 0; }}
+                li {{ margin: 10px 0; }}
+                a {{ text-decoration: none; color: #0066cc; }}
+                a:hover {{ text-decoration: underline; }}
             </style>
         </head>
         <body>
-            <h1>PySide6 $VERSION Documentation</h1>
-            <p>离线文档下载于: $(date)</p>
+            <h1>PySide6 {VERSION} Documentation</h1>
+            <p>离线文档下载于: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
             <ul>
         """
         
@@ -141,24 +208,25 @@ jobs:
         
         index_content += """
             </ul>
-            <p><em>Note: This is a mirrored version of the official online documentation.</em></p>
+            <p><em>Note: This is a focused mirror containing only PySide6 related documentation.</em></p>
         </body>
         </html>
-        """.replace('$VERSION', VERSION)
+        """
         
         with open(os.path.join(OUTPUT_DIR, 'index.html'), 'w', encoding='utf-8') as f:
             f.write(index_content)
         
-        print(f"\n文档下载完成! 保存在目录: {OUTPUT_DIR}")
+        print(f"\n文档下载完成! 共下载 {len(downloaded_urls)} 个页面")
+        print(f"保存在目录: {OUTPUT_DIR}")
         EOF
         
-    - name: Run documentation downloader
+    - name: Run focused documentation downloader
       run: |
         python download_docs.py
         
-    - name: Use wget for comprehensive mirroring
+    - name: Use wget for focused mirroring
       run: |
-        # 使用wget进行更完整的镜像
+        # 使用wget进行聚焦镜像，只下载PySide6相关内容
         wget --mirror \
              --convert-links \
              --adjust-extension \
@@ -167,33 +235,14 @@ jobs:
              --no-host-directories \
              --restrict-file-names=windows \
              --reject-regex=".*\.svg,.*\.png,.*\.jpg,.*\.gif" \
-             --wait=2 \
+             --accept-regex=".*qtforpython-6.*|.*pyside6.*|.*shiboken6.*" \
+             --wait=1 \
              --random-wait \
              --limit-rate=1M \
              -e robots=off \
              --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
              --directory-prefix=pyside6-wget-docs \
              "$DOCS_BASE_URL" || echo "wget镜像完成或有部分错误"
-        
-    - name: Use httrack for advanced mirroring
-      run: |
-        # 安装httrack（更专业的网站镜像工具）
-        sudo apt-get update
-        sudo apt-get install -y httrack
-        
-        # 使用httrack镜像网站
-        httrack "$DOCS_BASE_URL" \
-          -O pyside6-httrack-docs \
-          -%v \
-          -r10 \
-          -s0 \
-          -#L100000 \
-          -*.png *.jpg *.gif *.svg \
-          +*.html *.css *.js \
-          -ad.doubleclick.net/* \
-          -www.google-analytics.com/* \
-          -F "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-          %u || echo "httrack镜像完成"
         
     - name: Archive downloaded documentation
       uses: actions/upload-artifact@v4
@@ -202,7 +251,6 @@ jobs:
         path: |
           pyside6-docs/
           pyside6-wget-docs/
-          pyside6-httrack-docs/
         retention-days: 90
         
     - name: Create documentation summary
@@ -213,19 +261,17 @@ jobs:
         echo "**PySide6 版本:** ${{ env.PYSIDE_VERSION }}" >> $GITHUB_STEP_SUMMARY
         echo "**源网址:** ${{ env.DOCS_BASE_URL }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**下载方法:**" >> $GITHUB_STEP_SUMMARY
-        echo "- Python脚本下载（选择性模块）" >> $GITHUB_STEP_SUMMARY
-        echo "- wget完整镜像" >> $GITHUB_STEP_SUMMARY
-        echo "- httrack专业镜像" >> $GITHUB_STEP_SUMMARY
+        echo "**下载策略:**" >> $GITHUB_STEP_SUMMARY
+        echo "- 只下载包含 'qtforpython-6', 'pyside6', 'shiboken6' 的页面" >> $GITHUB_STEP_SUMMARY
+        echo "- 限制递归深度为2层" >> $GITHUB_STEP_SUMMARY
+        echo "- 跳过图片等非必要资源" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**文档结构:**" >> $GITHUB_STEP_SUMMARY
-        echo "- 按模块组织的HTML文档" >> $GITHUB_STEP_SUMMARY
-        echo "- 完整的导航和链接" >> $GITHUB_STEP_SUMMARY
-        echo "- 可在任何浏览器中离线查看" >> $GITHUB_STEP_SUMMARY
+        echo "**下载方法:**" >> $GITHUB_STEP_SUMMARY
+        echo "- Python脚本递归下载" >> $GITHUB_STEP_SUMMARY
+        echo "- wget聚焦镜像" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
         
         # 统计下载的文件数量
-        echo "" >> $GITHUB_STEP_SUMMARY
         echo "**文件统计:**" >> $GITHUB_STEP_SUMMARY
         echo "- Python脚本: $(find pyside6-docs -name '*.html' | wc -l) 个HTML文件" >> $GITHUB_STEP_SUMMARY
         echo "- wget镜像: $(find pyside6-wget-docs -name '*.html' | wc -l) 个HTML文件" >> $GITHUB_STEP_SUMMARY
-        echo "- httrack镜像: $(find pyside6-httrack-docs -name '*.html' | wc -l) 个HTML文件" >> $GITHUB_STEP_SUMMARY
