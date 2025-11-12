@@ -1,13 +1,14 @@
-name: Crawl Kotlin Documentation
+name: Crawl Kotlin Documentation (Optimized)
 
 on:
   workflow_dispatch:  # 手动触发
   schedule:
-    - cron: '0 0 * * 0'  # 每周日午夜运行一次
+    - cron: '0 2 * * 0'  # 每周日凌晨2点运行（服务器负载较低）
 
 jobs:
   crawl-kotlin-docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 180  # 3小时超时限制
     
     steps:
     - name: Checkout repository
@@ -16,18 +17,22 @@ jobs:
     - name: Set up environment
       run: |
         mkdir -p kotlin-docs
+        mkdir -p docs
+        mkdir -p api
         
-    - name: Install wget
-      run: sudo apt-get update && sudo apt-get install -y wget
-        
-    - name: Crawl Kotlin documentation
+    - name: Install wget and parallel
       run: |
-        cd kotlin-docs
+        sudo apt-get update
+        sudo apt-get install -y wget parallel pv
         
-        # 爬取 https://kotlinlang.org/docs 开头的链接
+    - name: Crawl Kotlin docs section (parallel)
+      run: |
+        cd docs
+        
+        # 使用更激进的设置提高速度
         wget \
           --recursive \
-          --level=5 \
+          --level=3 \
           --no-parent \
           --no-clobber \
           --html-extension \
@@ -35,35 +40,75 @@ jobs:
           --restrict-file-names=windows \
           --domains kotlinlang.org \
           --regex-type "pcre" \
-          --accept-regex "https://kotlinlang\.org/(docs|api).*" \
-          --reject-regex ".*\.(jpg|jpeg|png|gif|bmp|svg|webp|mp3|wav|ogg|mp4|avi|mov|flv|webm)$" \
+          --accept-regex "https://kotlinlang\.org/docs.*" \
+          --reject-regex ".*\.(jpg|jpeg|png|gif|bmp|svg|webp|mp3|wav|ogg|mp4|avi|mov|flv|webm|pdf|zip|tar|gz)$" \
           --no-check-certificate \
-          --timeout=60 \
-          --tries=3 \
-          --wait=2 \
+          --timeout=30 \
+          --tries=2 \
+          --wait=1 \
           --random-wait \
+          --page-requisites \
+          --adjust-extension \
           -e robots=off \
           --user-agent="Mozilla/5.0 (compatible; GitHub-Actions-Crawler)" \
-          https://kotlinlang.org/
+          --reject-regex=".*/.*/.*/.*/.*" \  # 限制URL深度
+          --quota=500m \  # 磁盘配额限制
+          https://kotlinlang.org/docs/ &
           
-    - name: Filter and organize downloaded content
+    - name: Crawl Kotlin api section (parallel)
       run: |
-        # 删除可能下载的媒体文件（双重保险）
-        find kotlin-docs -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.gif" -o -name "*.bmp" -o -name "*.svg" -o -name "*.webp" -o -name "*.mp3" -o -name "*.wav" -o -name "*.ogg" -o -name "*.mp4" -o -name "*.avi" -o -name "*.mov" -o -name "*.flv" -o -name "*.webm" \) -delete
+        cd api
         
-        # 显示下载的文件结构
-        echo "下载的文件结构:"
-        find kotlin-docs -type f -name "*.html" | head -20
-        
-    - name: Create summary
+        wget \
+          --recursive \
+          --level=2 \
+          --no-parent \
+          --no-clobber \
+          --html-extension \
+          --convert-links \
+          --restrict-file-names=windows \
+          --domains kotlinlang.org \
+          --regex-type "pcre" \
+          --accept-regex "https://kotlinlang\.org/api.*" \
+          --reject-regex ".*\.(jpg|jpeg|png|gif|bmp|svg|webp|mp3|wav|ogg|mp4|avi|mov|flv|webm|pdf|zip|tar|gz)$" \
+          --no-check-certificate \
+          --timeout=30 \
+          --tries=2 \
+          --wait=1 \
+          --random-wait \
+          --page-requisites \
+          --adjust-extension \
+          -e robots=off \
+          --user-agent="Mozilla/5.0 (compatible; GitHub-Actions-Crawler)" \
+          --reject-regex=".*/.*/.*/.*/.*" \
+          --quota=300m \
+          https://kotlinlang.org/api/ &
+          
+    - name: Wait for both crawls to complete
       run: |
-        echo "爬取完成!"
+        wait
+        echo "并行爬取完成"
+        
+    - name: Combine results
+      run: |
+        mv docs/* kotlin-docs/ 2>/dev/null || true
+        mv api/* kotlin-docs/ 2>/dev/null || true
+        rm -rf docs api
+        
+    - name: Quick cleanup and summary
+      run: |
+        # 快速清理媒体文件
+        find kotlin-docs -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.gif" -o -name "*.bmp" -o -name "*.svg" -o -name "*.webp" -o -name "*.mp3" -o -name "*.wav" -o -name "*.ogg" -o -name "*.mp4" -o -name "*.avi" -o -name "*.mov" -o -name "*.flv" -o -name "*.webm" -o -name "*.pdf" \) -delete
+        
+        echo "优化爬取完成!"
         echo "下载的HTML文件数量: $(find kotlin-docs -name "*.html" | wc -l)"
         echo "总文件大小: $(du -sh kotlin-docs | cut -f1)"
+        echo "文件类型统计:"
+        find kotlin-docs -type f | sed 's/.*\.//' | sort | uniq -c | sort -nr | head -10
         
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: kotlin-documentation
+        name: kotlin-documentation-optimized
         path: kotlin-docs/
-        retention-days: 30
+        retention-days: 7  # 减少保留天数以节省存储空间
