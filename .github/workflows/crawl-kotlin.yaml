@@ -1,4 +1,4 @@
-name: Crawl Kotlin Documentation - Parallel Download
+name: Crawl Kotlin Documentation - Optimized
 
 on:
   workflow_dispatch:
@@ -6,223 +6,202 @@ on:
 jobs:
   crawl-kotlin-docs:
     runs-on: ubuntu-latest
-    timeout-minutes: 330  # 5.5小时超时保护
+    timeout-minutes: 330
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Install tools for parallel download
+    - name: Install tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget python3 python3-pip aria2 parallel
-        pip3 install requests beautifulsoup4 lxml
+        sudo apt-get install -y wget python3 python3-pip
+        pip3 install requests beautifulsoup4 lxml urllib3
       
     - name: Create directories
       run: |
         mkdir -p kotlin-docs
-        mkdir -p partial-downloads
-        mkdir -p url-tracking
+        mkdir -p logs
         
-    - name: Generate URL list first
+    - name: Generate and validate URL list
       run: |
-        # 使用Python脚本先获取所有要下载的URL
-        cat > generate_urls.py << 'EOF'
+        # 生成URL列表并验证有效性
+        cat > generate_and_validate_urls.py << 'EOF'
         import requests
         from bs4 import BeautifulSoup
         import urllib.parse
-        import sys
+        import time
+        import concurrent.futures
         
-        def get_all_links(base_url, max_level=3, current_level=0, visited=None):
-            if visited is None:
-                visited = set()
-                
-            if current_level > max_level or base_url in visited:
-                return set()
-                
-            visited.add(base_url)
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (compatible; Documentation-Crawler/1.0)'
+        })
+        
+        def check_url(url):
+            """检查URL是否可访问"""
+            try:
+                response = session.head(url, timeout=10, allow_redirects=True)
+                if response.status_code == 200:
+                    return url, True
+                else:
+                    print(f"跳过 {url} - 状态码: {response.status_code}")
+                    return url, False
+            except Exception as e:
+                print(f"跳过 {url} - 错误: {e}")
+                return url, False
+        
+        def get_all_links(base_url, max_level=2):
+            """获取所有链接，限制深度以提高成功率"""
+            visited = set()
+            to_visit = [(base_url, 0)]
             all_links = set()
             
-            try:
-                response = requests.get(base_url, timeout=10)
-                soup = BeautifulSoup(response.content, 'html.parser')
+            while to_visit:
+                url, level = to_visit.pop(0)
                 
-                for link in soup.find_all('a', href=True):
-                    href = link['href']
-                    full_url = urllib.parse.urljoin(base_url, href)
+                if url in visited or level > max_level:
+                    continue
                     
-                    # 只保留docs和api开头的链接
-                    if 'kotlinlang.org/docs' in full_url or 'kotlinlang.org/api' in full_url:
-                        # 过滤掉媒体文件
-                        if not any(ext in full_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp', '.mp3', '.wav', '.ogg', '.mp4', '.avi', '.mov', '.flv', '.webm', '.pdf', '.js', '.css', '.zip']):
-                            if full_url not in visited:
+                visited.add(url)
+                print(f"扫描: {url} (层级 {level})")
+                
+                try:
+                    response = session.get(url, timeout=15)
+                    soup = BeautifulSoup(response.content, 'html.parser')
+                    
+                    for link in soup.find_all('a', href=True):
+                        href = link['href']
+                        full_url = urllib.parse.urljoin(url, href)
+                        
+                        # 只保留docs和api开头的链接，且过滤媒体文件
+                        if ('kotlinlang.org/docs' in full_url or 'kotlinlang.org/api' in full_url) and \
+                           not any(ext in full_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp', '.mp3', '.wav', '.ogg', '.mp4', '.avi', '.mov', '.flv', '.webm', '.pdf', '.js', '.css', '.zip']):
+                            if full_url not in visited and level < max_level:
+                                to_visit.append((full_url, level + 1))
                                 all_links.add(full_url)
-                                print(f"Found: {full_url}")
-                
-                # 递归获取下一级链接
-                next_level_links = set()
-                for link in list(all_links):
-                    next_level_links |= get_all_links(link, max_level, current_level + 1, visited)
-                
-                all_links |= next_level_links
-                
-            except Exception as e:
-                print(f"Error processing {base_url}: {e}")
-                
+                    
+                    time.sleep(0.5)  # 礼貌等待
+                    
+                except Exception as e:
+                    print(f"错误处理 {url}: {e}")
+                    continue
+                    
             return all_links
         
-        # 主程序
+        print("开始收集docs链接...")
         docs_links = get_all_links('https://kotlinlang.org/docs/')
+        print(f"找到 {len(docs_links)} 个docs链接")
+        
+        print("开始收集api链接...")
         api_links = get_all_links('https://kotlinlang.org/api/')
+        print(f"找到 {len(api_links)} 个api链接")
         
-        all_unique_links = docs_links | api_links
+        all_links = list(docs_links | api_links)
+        print(f"总共找到 {len(all_links)} 个链接")
         
-        print(f"Total unique URLs found: {len(all_unique_links)}")
+        # 验证链接可访问性
+        print("验证链接可访问性...")
+        valid_links = []
         
-        with open('url_list.txt', 'w') as f:
-            for url in sorted(all_unique_links):
+        # 使用线程池验证，但限制并发数
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            future_to_url = {executor.submit(check_url, url): url for url in all_links}
+            for future in concurrent.futures.as_completed(future_to_url):
+                url, valid = future.result()
+                if valid:
+                    valid_links.append(url)
+        
+        print(f"有效链接: {len(valid_links)}/{len(all_links)}")
+        
+        with open('valid_urls.txt', 'w') as f:
+            for url in valid_links:
+                f.write(url + '\n')
+                
+        with open('all_urls.txt', 'w') as f:
+            for url in all_links:
                 f.write(url + '\n')
         EOF
         
-        python3 generate_urls.py
-        
-        echo "URL列表生成完成，共找到 $(wc -l < url_list.txt) 个唯一链接"
-        head -10 url_list.txt
+        python3 generate_and_validate_urls.py
+        echo "有效URL: $(wc -l < valid_urls.txt)/$(wc -l < all_urls.txt)"
       
-    - name: Download using aria2 for parallel downloads
+    - name: Download with rate limiting
       run: |
         cd kotlin-docs
         
-        # 使用aria2进行并行下载，大幅提高速度
-        # -j 10: 同时下载10个文件
-        # -x 10: 每个文件使用10个连接
-        # -s 10: 将文件分成10个片段并行下载
-        timeout 4h aria2c \
-          -i ../url_list.txt \
-          -j 10 \
-          -x 10 \
-          -s 10 \
-          --timeout=30 \
-          --max-tries=3 \
-          --retry-wait=1 \
-          --user-agent="Mozilla/5.0 (compatible; Docs-Crawler)" \
-          --file-allocation=none \
-          --continue=true \
-          --max-connection-per-server=10 \
-          --split=10 \
-          --min-split-size=1M \
-          --stream-piece-selector=random \
-          --enable-http-keep-alive=true \
-          --enable-http-pipelining=true \
-          --check-certificate=false \
-          --auto-file-renaming=false \
-          --dir=. \
-          --out="file.%(ext)s" || true
+        # 使用更保守的wget设置，限制速率
+        # 不使用并行下载，避免被限制
+        timeout 4h wget \
+          --input-file=../valid_urls.txt \
+          --no-check-certificate \
+          --timeout=45 \
+          --tries=3 \
+          --wait=2 \
+          --random-wait \
+          --html-extension \
+          --convert-links \
+          --restrict-file-names=unix \
+          --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+          --progress=dot \
+          --timestamping \
+          --level=0 \
+          --recursive \
+          --page-requisites \
+          --adjust-extension \
+          --force-directories \
+          --trust-server-names \
+          --retry-connrefused \
+          --continue \
+          --output-file=../logs/wget.log || true
           
-        echo "aria2c下载进程结束"
+        echo "下载完成"
         
-    - name: Alternative parallel download with wget (if aria2 fails)
-      if: failure()
+    - name: Analyze download results
       run: |
-        cd kotlin-docs
+        echo "=== 下载分析 ==="
+        total_urls=$(wc -l < valid_urls.txt)
+        downloaded_files=$(find kotlin-docs -type f | wc -l)
+        html_files=$(find kotlin-docs -name "*.html" | wc -l)
         
-        # 如果aria2失败，使用GNU parallel配合wget进行并行下载
-        # 分割URL列表为多个部分
-        split -l 100 ../url_list.txt url_chunk_
+        echo "有效URL数: $total_urls"
+        echo "下载文件数: $downloaded_files"
+        echo "HTML文件数: $html_files"
         
-        # 使用parallel并行下载，最多同时5个进程
-        find . -name "url_chunk_*" | parallel -j 5 \
-          "wget --input-file={} \
-           --no-check-certificate \
-           --timeout=20 \
-           --tries=2 \
-           --wait=0 \
-           --html-extension \
-           --convert-links \
-           --restrict-file-names=unix \
-           --user-agent='Mozilla/5.0 (compatible; Docs-Crawler)' \
-           --progress=bar \
-           --timestamping \
-           --level=0 \
-           --recursive || echo '部分下载失败: {}'"
-        
-        # 清理临时文件
-        rm -f url_chunk_*
-        
-        echo "并行wget下载完成"
-        
-    - name: Organize downloaded files
-      run: |
-        # 备份已下载内容
-        if [ "$(ls -A kotlin-docs 2>/dev/null)" ]; then
-          echo "备份已下载的 $(find kotlin-docs -type f | wc -l) 个文件..."
-          cp -r kotlin-docs/* partial-downloads/ 2>/dev/null || true
+        if [ $total_urls -gt 0 ]; then
+            success_rate=$((html_files * 100 / total_urls))
+            echo "成功率: $success_rate%"
         fi
         
-        # 重命名文件，确保有正确的扩展名
-        find kotlin-docs -type f -name "file.html*" -exec bash -c '
-          for file; do
-            # 提取原始URL信息并重命名文件
-            newname=$(echo "$file" | sed "s/file.html\.//" | sed "s/\.\?[0-9]*$//")
-            if [ -f "$file" ] && [ ! -f "$newname" ]; then
-              mv "$file" "$newname" 2>/dev/null || true
-            fi
-          done
-        ' bash {} +
+        # 检查wget日志中的错误
+        if [ -f logs/wget.log ]; then
+            echo "=== 常见错误 ==="
+            grep -i "error\|failed\|404\|403\|500" logs/wget.log | head -10 || true
+        fi
         
-        # 清理小文件和空文件
-        find kotlin-docs -size -100c -delete 2>/dev/null || true
-        find kotlin-docs -type d -empty -delete 2>/dev/null || true
+        # 生成详细报告
+        cat > kotlin-docs/download-report.md << EOF
+        # Kotlin 文档下载报告
         
-    - name: Remove duplicates and generate report
-      run: |
-        echo "开始处理重复文件..."
+        - 扫描到的总URL: $(wc -l < all_urls.txt)
+        - 验证有效的URL: $(wc -l < valid_urls.txt)
+        - 成功下载的HTML文件: $html_files
+        - 下载成功率: $success_rate%
+        - 下载时间: $(date)
         
-        # 基于内容去重
-        find kotlin-docs -type f -name "*.html" -exec md5sum {} \; | \
-          sort | uniq -w32 -d | while read md5 filename; do
-          echo "删除重复文件: $filename"
-          rm "$filename"
-        done 2>/dev/null || true
-        
-        # 生成最终报告
-        echo "=== 最终下载报告 ===" > kotlin-docs/download-report.txt
-        echo "唯一URL总数: $(wc -l < url_list.txt)" >> kotlin-docs/download-report.txt
-        echo "最终HTML文件数: $(find kotlin-docs -name "*.html" | wc -l)" >> kotlin-docs/download-report.txt
-        echo "总文件大小: $(du -sh kotlin-docs | cut -f1)" >> kotlin-docs/download-report.txt
-        echo "下载完成时间: $(date)" >> kotlin-docs/download-report.txt
-        
-        echo "文档分类统计:"
-        echo "- docs 部分: $(find kotlin-docs -path "*/docs/*" -name "*.html" 2>/dev/null | wc -l)"
-        echo "- api 部分: $(find kotlin-docs -path "*/api/*" -name "*.html" 2>/dev/null | wc -l)"
-        
-        # 生成站点地图
-        find kotlin-docs -name "*.html" | sed 's|kotlin-docs/||' | sort > kotlin-docs/sitemap.txt 2>/dev/null || true
+        ## 文件结构
+        \`\`\`
+        $(find kotlin-docs -type d | sort | head -20)
+        \`\`\`
+        EOF
         
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: kotlin-docs-parallel-$(date +%s)
+        name: kotlin-docs-optimized
         path: |
           kotlin-docs/
-          url_list.txt
+          valid_urls.txt
+          all_urls.txt
+          logs/
         retention-days: 7
-        
-    - name: Final status
-      run: |
-        total_urls=$(wc -l < url_list.txt)
-        downloaded_files=$(find kotlin-docs -name "*.html" | wc -l)
-        success_rate=$((downloaded_files * 100 / total_urls))
-        
-        echo "=== 下载完成 ==="
-        echo "URL总数: $total_urls"
-        echo "下载文件数: $downloaded_files"
-        echo "成功率: $success_rate%"
-        
-        if [ $success_rate -gt 80 ]; then
-          echo "✅ 下载成功！"
-        elif [ $success_rate -gt 50 ]; then
-          echo "⚠️  部分下载成功"
-        else
-          echo "❌ 下载完成但成功率较低"
-        fi
