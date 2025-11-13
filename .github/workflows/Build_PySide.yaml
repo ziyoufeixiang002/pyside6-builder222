@@ -31,7 +31,15 @@ jobs:
           cmake \
           git \
           libgl1-mesa-dev \
-          libxkbcommon-x11-0
+          libxkbcommon-x11-0 \
+          libxcb-icccm4 \
+          libxcb-image0 \
+          libxcb-keysyms1 \
+          libxcb-randr0 \
+          libxcb-render-util0 \
+          libxcb-xinerama0 \
+          libxcb-xinput0 \
+          libxcb-xfixes0
         
     - name: Download Qt 6.10 source
       run: |
@@ -46,75 +54,107 @@ jobs:
         python -m venv pyside-venv
         source pyside-venv/bin/activate
         pip install --upgrade pip
+        # 安装兼容版本的 wheel 和 setuptools
+        pip install "wheel<1.0.0" "setuptools<70.0.0"
         
     - name: Install documentation requirements
       run: |
         cd pyside-setup
         source pyside-venv/bin/activate
-        # 检查 requirements-doc.txt 文件
+        # 先尝试找到 requirements-doc.txt
         if [ -f "requirements-doc.txt" ]; then
-          echo "Found requirements-doc.txt, installing dependencies..."
           pip install -r requirements-doc.txt
         else
-          echo "requirements-doc.txt not found in root, searching..."
-          find . -name "requirements-doc.txt" -type f
-          # 安装默认的文档构建依赖
-          pip install sphinx sphinx-rtd-theme sphinx-intl graphviz breathe
+          # 手动安装文档构建依赖
+          pip install sphinx==5.3.0 sphinx-rtd-theme==1.3.0 sphinx-intl==2.1.0 graphviz breathe
         fi
         
     - name: Install build dependencies
       run: |
         cd pyside-setup
         source pyside-venv/bin/activate
-        # 安装构建所需的基础包
-        pip install wheel setuptools ninja
+        # 安装构建所需的基础包（使用兼容版本）
+        pip install "ninja<1.12.0" "cmake<3.30.0"
         
-    - name: Configure PySide build with documentation
+    - name: Configure and build PySide
       run: |
         cd pyside-setup
         source pyside-venv/bin/activate
+        
+        # 首先构建 shiboken6
+        python setup.py build --ignore-git --build-tests=no --quiet \
+          --qt-src-dir="$QT_SRC_DIR" \
+          --internal-build-type=shiboken6
+        
+    - name: Configure PySide with documentation
+      run: |
+        cd pyside-setup
+        source pyside-venv/bin/activate
+        
+        # 然后构建 PySide6 并启用文档
         python setup.py build --build-docs \
           --qt-src-dir="$QT_SRC_DIR" \
           --doc-build-online \
-          --ignore-git
+          --ignore-git \
+          --build-tests=no
         
     - name: Build API documentation
       run: |
         cd pyside-setup
         source pyside-venv/bin/activate
+        
         # 进入构建目录构建 API 文档
-        cd build/pyside-venv/build/pyside6
-        ninja -j$(nproc) apidoc
+        if [ -d "build/pyside-venv/build/pyside6" ]; then
+          cd build/pyside-venv/build/pyside6
+          ninja -j$(nproc) apidoc
+        else
+          echo "PySide6 build directory not found, trying alternative location..."
+          find . -name "pyside6" -type d | grep build | head -1
+        fi
         
     - name: Build Shiboken documentation
       run: |
         cd pyside-setup
         source pyside-venv/bin/activate
-        cd build/pyside-venv/build/shiboken6/doc
-        ninja -j$(nproc)
+        
+        # 构建 Shiboken 文档
+        if [ -d "build/pyside-venv/build/shiboken6/doc" ]; then
+          cd build/pyside-venv/build/shiboken6/doc
+          ninja -j$(nproc)
+        else
+          echo "Shiboken6 doc directory not found, trying alternative location..."
+          find . -name "shiboken6" -type d | grep build | head -1
+        fi
         
     - name: Package documentation
       run: |
         cd pyside-setup
         mkdir -p pyside-6.10-docs
         
-        # 复制 PySide6 文档
-        if [ -d "build/pyside-venv/build/pyside6/doc/html" ]; then
-          cp -r build/pyside-venv/build/pyside6/doc/html pyside-6.10-docs/pyside6
+        # 查找并复制 PySide6 文档
+        PYSPIDE_HTML_DIR=$(find . -path "*/pyside6/doc/html" -type d | head -1)
+        if [ -n "$PYSPIDE_HTML_DIR" ]; then
+          cp -r "$PYSPIDE_HTML_DIR" pyside-6.10-docs/pyside6
+          echo "Found PySide6 docs at: $PYSPIDE_HTML_DIR"
+        else
+          echo "PySide6 HTML documentation not found"
         fi
         
-        # 复制 Shiboken6 文档
-        if [ -d "build/pyside-venv/build/shiboken6/doc/html" ]; then
-          cp -r build/pyside-venv/build/shiboken6/doc/html pyside-6.10-docs/shiboken6
+        # 查找并复制 Shiboken6 文档
+        SHIBOKEN_HTML_DIR=$(find . -path "*/shiboken6/doc/html" -type d | head -1)
+        if [ -n "$SHIBOKEN_HTML_DIR" ]; then
+          cp -r "$SHIBOKEN_HTML_DIR" pyside-6.10-docs/shiboken6
+          echo "Found Shiboken6 docs at: $SHIBOKEN_HTML_DIR"
+        else
+          echo "Shiboken6 HTML documentation not found"
         fi
         
         # 复制 QCH 文件
-        find build -name "*.qch" -exec cp {} pyside-6.10-docs/ \; 2>/dev/null || true
+        find . -name "*.qch" -exec cp {} pyside-6.10-docs/ \; 2>/dev/null || true
         
-        # 创建构建信息
-        echo "PySide 6.10 Documentation" > pyside-6.10-docs/README.txt
-        echo "Built on: $(date)" >> pyside-6.10-docs/README.txt
-        echo "Source: https://code.qt.io/pyside/pyside-setup" >> pyside-6.10-docs/README.txt
+        # 显示打包结果
+        echo "Packaged files:"
+        ls -la pyside-6.10-docs/
         
     - name: Upload documentation artifacts
       uses: actions/upload-artifact@v4
@@ -122,14 +162,3 @@ jobs:
         name: pyside-6.10-documentation
         path: pyside-setup/pyside-6.10-docs/
         retention-days: 30
-        
-    - name: Create summary
-      run: |
-        echo "## PySide 6.10 Documentation Build Complete" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Built Components:**" >> $GITHUB_STEP_SUMMARY
-        echo "- PySide6 API Documentation" >> $GITHUB_STEP_SUMMARY
-        echo "- Shiboken6 Documentation" >> $GITHUB_STEP_SUMMARY
-        echo "- Offline QCH files" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Download the artifacts to access the documentation.**" >> $GITHUB_STEP_SUMMARY
