@@ -1,44 +1,23 @@
-name: Build PySide Documentation
+name: Build PySide 6.10 Documentation
 
 on:
-  workflow_dispatch:
-    inputs:
-      pyside_version:
-        description: 'PySide version to build'
-        required: true
-        default: '6.8'
-        type: choice
-        options:
-          - '6.8'
-          - '6.9'
-          - '6.10'
-      build_type:
-        description: 'Documentation build type'
-        required: true
-        default: 'full'
-        type: choice
-        options:
-          - 'full'
-          - 'base'
-
-env:
-  PYTHON_VERSION: '3.10'
+  workflow_dispatch
 
 jobs:
   build-docs:
     runs-on: ubuntu-22.04
     
     steps:
-    - name: Checkout PySide repository
+    - name: Checkout PySide 6.10
       uses: actions/checkout@v4
       with:
         repository: pyside/pyside-setup
-        ref: ${{ github.event.inputs.pyside_version }}
+        ref: 6.10
         
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
+        python-version: '3.10'
         
     - name: Install system dependencies
       run: |
@@ -51,174 +30,49 @@ jobs:
           build-essential \
           cmake \
           git \
-          libgl1-mesa-dev \
-          libxkbcommon-x11-0 \
-          libdbus-1-3 \
-          libfontconfig1 \
-          libxrender1 \
-          libxext6
+          libgl1-mesa-dev
         
-    - name: Setup Qt version mapping
-      id: qt_version
+    - name: Download Qt 6.10 source
       run: |
-        case "${{ github.event.inputs.pyside_version }}" in
-          "6.8")
-            QT_VERSION="6.8.0"
-            ;;
-          "6.9")
-            QT_VERSION="6.9.0"
-            ;;
-          "6.10")
-            QT_VERSION="6.10.0"
-            ;;
-          *)
-            QT_VERSION="6.8.0"
-            ;;
-        esac
-        echo "QT_VERSION=$QT_VERSION" >> $GITHUB_OUTPUT
-        echo "Using Qt version: $QT_VERSION"
-        
-    - name: Download and extract Qt source
-      run: |
-        QT_MAJOR_VERSION=${{ steps.qt_version.outputs.QT_VERSION }}
-        QT_BASE_VERSION=${QT_MAJOR_VERSION%.*}
-        echo "Downloading Qt $QT_MAJOR_VERSION source..."
-        
-        # Download Qt source
-        wget -q https://download.qt.io/archive/qt/$QT_BASE_VERSION/$QT_MAJOR_VERSION/single/qt-everywhere-src-$QT_MAJOR_VERSION.tar.xz
-        
-        # Extract Qt source
-        tar -xf qt-everywhere-src-$QT_MAJOR_VERSION.tar.xz
-        echo "QT_SRC_DIR=$(pwd)/qt-everywhere-src-$QT_MAJOR_VERSION" >> $GITHUB_ENV
-        echo "Qt source extracted to: $(pwd)/qt-everywhere-src-$QT_MAJOR_VERSION"
+        wget -q https://download.qt.io/archive/qt/6.10/6.10.0/single/qt-everywhere-src-6.10.0.tar.xz
+        tar -xf qt-everywhere-src-6.10.0.tar.xz
+        echo "QT_SRC_DIR=$(pwd)/qt-everywhere-src-6.10.0" >> $GITHUB_ENV
         
     - name: Create virtual environment
       run: |
         python -m venv pyside-venv
         source pyside-venv/bin/activate
         pip install --upgrade pip
-        echo "VIRTUAL_ENV=$(pwd)/pyside-venv" >> $GITHUB_ENV
         
     - name: Install documentation requirements
       run: |
         source pyside-venv/bin/activate
-        if [ -f "requirements-doc.txt" ]; then
-          pip install -r requirements-doc.txt
-        else
-          pip install sphinx sphinx-rtd-theme sphinx-intl graphviz breathe
-        fi
+        pip install -r requirements-doc.txt
         
-    - name: Install build requirements
+    - name: Configure PySide build
       run: |
         source pyside-venv/bin/activate
-        if [ -f "requirements.txt" ]; then
-          pip install -r requirements.txt
-        else
-          pip install wheel setuptools ninja
-        fi
-        
-    - name: Configure PySide build (Full Docs)
-      if: github.event.inputs.build_type == 'full'
-      run: |
-        source pyside-venv/bin/activate
-        echo "Configuring full documentation build for PySide ${{ github.event.inputs.pyside_version }}..."
         python setup.py build --build-docs \
           --qt-src-dir="$QT_SRC_DIR" \
           --doc-build-online \
-          --ignore-git \
-          --build-tests=no \
-          --quiet
-        
-    - name: Configure base documentation only
-      if: github.event.inputs.build_type == 'base'
-      run: |
-        source pyside-venv/bin/activate
-        echo "Configuring base documentation build for PySide ${{ github.event.inputs.pyside_version }}..."
-        python setup.py build_base_docs \
-          --ignore-git \
-          --quiet
+          --ignore-git
         
     - name: Build API documentation
-      if: github.event.inputs.build_type == 'full'
       run: |
         source pyside-venv/bin/activate
-        echo "Building API documentation..."
-        
-        # Find build directory
-        BUILD_DIR=$(find . -name "build" -type d | head -1)
-        if [ -z "$BUILD_DIR" ]; then
-          BUILD_DIR="build"
-          mkdir -p $BUILD_DIR
-        fi
-        
-        cd $BUILD_DIR/pyside*/build/pyside6
+        cd build/pyside-venv/build/pyside6
         ninja -j$(nproc) apidoc
         
-    - name: Build base documentation
-      if: github.event.inputs.build_type == 'base'
+    - name: Package documentation
       run: |
-        source pyside-venv/bin/activate
-        echo "Building base documentation..."
-        python setup.py build_base_docs
+        mkdir -p pyside-6.10-docs
+        cp -r build/pyside-venv/build/pyside6/doc/html pyside-6.10-docs/pyside6
+        cp -r build/pyside-venv/build/shiboken6/doc/html pyside-6.10-docs/shiboken6
+        find build -name "*.qch" -exec cp {} pyside-6.10-docs/ \; 2>/dev/null || true
         
-    - name: Collect and package documentation
-      run: |
-        source pyside-venv/bin/activate
-        echo "Packaging documentation..."
-        
-        mkdir -p documentation-artifacts
-        
-        if [ "${{ github.event.inputs.build_type }}" == "full" ]; then
-          if [ -d "build/pyside-venv/build/pyside6/doc/html" ]; then
-            cp -r build/pyside-venv/build/pyside6/doc/html documentation-artifacts/pyside6
-          fi
-          if [ -d "build/pyside-venv/build/shiboken6/doc/html" ]; then
-            cp -r build/pyside-venv/build/shiboken6/doc/html documentation-artifacts/shiboken6
-          fi
-          find build -name "*.qch" -exec cp {} documentation-artifacts/ \; 2>/dev/null || true
-        else
-          if [ -d "html/pyside6" ]; then
-            cp -r html/pyside6 documentation-artifacts/pyside6
-          fi
-          if [ -d "html/shiboken6" ]; then
-            cp -r html/shiboken6 documentation-artifacts/shiboken6
-          fi
-        fi
-        
-        cat > documentation-artifacts/build-info.txt << EOF
-PySide Version: ${{ github.event.inputs.pyside_version }}
-Qt Version: ${{ steps.qt_version.outputs.QT_VERSION }}
-Build Type: ${{ github.event.inputs.build_type }}
-Build Date: $(date -u)
-GitHub Run ID: ${{ github.run_id }}
-EOF
-        
-    - name: Upload documentation artifacts
+    - name: Upload documentation
       uses: actions/upload-artifact@v4
       with:
-        name: pyside-${{ github.event.inputs.pyside_version }}-${{ github.event.inputs.build_type }}-docs
-        path: documentation-artifacts/
+        name: pyside-6.10-documentation
+        path: pyside-6.10-docs/
         retention-days: 30
-        
-    - name: Create build summary
-      run: |
-        echo "## PySide ${{ github.event.inputs.pyside_version }} Documentation Build Complete" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Build Details:**" >> $GITHUB_STEP_SUMMARY
-        echo "- PySide Version: ${{ github.event.inputs.pyside_version }}" >> $GITHUB_STEP_SUMMARY
-        echo "- Qt Version: ${{ steps.qt_version.outputs.QT_VERSION }}" >> $GITHUB_STEP_SUMMARY
-        echo "- Build Type: ${{ github.event.inputs.build_type }}" >> $GITHUB_STEP_SUMMARY
-        echo "- Python Version: ${{ env.PYTHON_VERSION }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Generated Artifacts:**" >> $GITHUB_STEP_SUMMARY
-        if [ "${{ github.event.inputs.build_type }}" == "full" ]; then
-          echo "- Complete PySide6 API Documentation" >> $GITHUB_STEP_SUMMARY
-          echo "- Shiboken6 Documentation" >> $GITHUB_STEP_SUMMARY
-          echo "- Offline QCH files" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "- Base Documentation (no API)" >> $GITHUB_STEP_SUMMARY
-          echo "- Example Gallery" >> $GITHUB_STEP_SUMMARY
-        fi
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Download:**" >> $GITHUB_STEP_SUMMARY
-        echo "Artifacts are available in the workflow run summary." >> $GITHUB_STEP_SUMMARY
