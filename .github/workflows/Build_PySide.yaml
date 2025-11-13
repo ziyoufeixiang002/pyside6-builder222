@@ -13,7 +13,9 @@ jobs:
         git clone https://code.qt.io/pyside/pyside-setup
         cd pyside-setup
         git checkout 6.10
-        echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
+        ls -la
+        echo "=== Checking build scripts ==="
+        find . -name "setup_runner.py" -type f | head -5
         
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -41,7 +43,9 @@ jobs:
           libxcb-xinerama0 \
           libxcb-xinput0 \
           libxcb-xfixes0 \
-          libx11-xcb-dev
+          libx11-xcb-dev \
+          bison \
+          flex
         
     - name: Download Qt 6.10 source
       run: |
@@ -50,101 +54,112 @@ jobs:
         tar -xf qt-everywhere-src-6.10.0.tar.xz
         echo "QT_SRC_DIR=$(pwd)/qt-everywhere-src-6.10.0" >> $GITHUB_ENV
         
-    - name: Create and setup virtual environment
+    - name: Create virtual environment
       run: |
         cd pyside-setup
         python -m venv pyside-venv
         source pyside-venv/bin/activate
         
-        # 使用兼容版本的构建工具
-        pip install --upgrade "pip<23.0"
-        pip install "setuptools==68.2.2" "wheel==0.41.3" "ninja==1.11.1"
+        # 使用较新但兼容的版本
+        pip install --upgrade pip
+        pip install setuptools wheel ninja cmake
         
-        # 安装文档构建依赖
+        # 安装文档依赖
         pip install sphinx sphinx-rtd-theme sphinx-intl graphviz breathe
         
-    - name: Build PySide with documentation (single command)
+    - name: Build Shiboken6 first (standalone)
       run: |
         cd pyside-setup
         source pyside-venv/bin/activate
         
-        echo "Building PySide6 with documentation support..."
+        echo "=== Building Shiboken6 ==="
+        python -c "
+import sys
+sys.path.insert(0, '.')
+from build_scripts.setup_runner import build_shiboken
+build_shiboken()
+        " || echo "Alternative build method failed, trying direct approach"
         
-        # 使用单个构建命令，避免分步构建的问题
-        python setup.py build \
-          --build-docs \
-          --qt-src-dir="$QT_SRC_DIR" \
-          --doc-build-online \
-          --ignore-git \
-          --build-tests=no \
-          --quiet \
-          --parallel=$(nproc)
+        # 直接尝试构建shiboken
+        python setup.py build_shiboken --qt-src-dir="$QT_SRC_DIR" --ignore-git --quiet
         
-    - name: Build API documentation only
+    - name: Build PySide6 with docs
       run: |
         cd pyside-setup
         source pyside-venv/bin/activate
         
-        echo "Building API documentation..."
+        echo "=== Building PySide6 with documentation ==="
         
-        # 直接进入构建目录构建文档
-        BUILD_DIR=$(find . -name "pyside6" -path "*/build/*" -type d | head -1 | xargs dirname)
-        if [ -n "$BUILD_DIR" ]; then
-          echo "Found build directory: $BUILD_DIR"
-          cd "$BUILD_DIR/pyside6"
-          ninja -j$(nproc) apidoc
-        else
-          echo "Build directory not found, listing directories..."
-          find . -name "build" -type d
+        # 尝试直接调用构建函数
+        python -c "
+import sys
+sys.path.insert(0, '.')
+from build_scripts.setup_runner import build_pyside
+build_pyside()
+        " || echo "Direct function call failed"
+        
+        # 备用方法：使用环境变量
+        export PYSIDE_BUILD_TYPE=Release
+        export PYSIDE_DOC_BUILD=ON
+        python setup.py build --qt-src-dir="$QT_SRC_DIR" --ignore-git --cmake-generator=Ninja
+        
+    - name: Build documentation separately
+      run: |
+        cd pyside-setup
+        source pyside-venv/bin/activate
+        
+        echo "=== Building documentation ==="
+        
+        # 查找构建目录
+        find . -name "CMakeCache.txt" -type f | head -10
+        
+        # 尝试构建文档
+        if [ -d "build/pyside6" ]; then
+          cd build/pyside6
+          ninja apidoc
+        elif [ -d "build" ]; then
+          cd build
+          find . -name "pyside6" -type d | head -1
+          PYSIDE_DIR=$(find . -name "pyside6" -type d | head -1)
+          if [ -n "$PYSIDE_DIR" ]; then
+            cd "$PYSIDE_DIR"
+            ninja apidoc
+          fi
         fi
         
-    - name: Build Shiboken documentation
+    - name: Try alternative documentation build
       run: |
         cd pyside-setup
         source pyside-venv/bin/activate
         
-        echo "Building Shiboken documentation..."
+        echo "=== Alternative documentation build ==="
         
-        SHIBOKEN_BUILD_DIR=$(find . -name "shiboken6" -path "*/build/*" -type d | head -1)
-        if [ -n "$SHIBOKEN_BUILD_DIR" ]; then
-          echo "Found Shiboken build directory: $SHIBOKEN_BUILD_DIR"
-          cd "$SHIBOKEN_BUILD_DIR/doc"
-          ninja -j$(nproc)
-        else
-          echo "Shiboken build directory not found"
-        fi
+        # 使用setup.py的文档构建目标
+        python setup.py build_docs --qt-src-dir="$QT_SRC_DIR" || \
+        python setup.py build_base_docs || \
+        echo "Documentation build commands not available"
         
-    - name: Find and package documentation
+    - name: Find and package any generated docs
       run: |
         cd pyside-setup
         
-        echo "Searching for generated documentation..."
-        
-        # 查找所有可能的文档目录
-        find . -name "html" -type d | grep -E "(pyside6|shiboken6)" | head -10
+        echo "=== Searching for documentation ==="
+        find . -name "*.html" -type f | head -20
+        find . -name "*.qch" -type f | head -10
+        find . -name "html" -type d | grep -E "(pyside|shiboken)" | head -10
         
         mkdir -p pyside-6.10-docs
         
-        # 复制 PySide6 文档
-        PYSIDE_DOCS=$(find . -path "*/pyside6/doc/html" -type d | head -1)
-        if [ -n "$PYSIDE_DOCS" ] && [ -d "$PYSIDE_DOCS" ]; then
-          echo "Copying PySide6 docs from: $PYSIDE_DOCS"
-          cp -r "$PYSIDE_DOCS" pyside-6.10-docs/pyside6
-        else
-          echo "PySide6 documentation not found in expected location"
-        fi
+        # 复制任何找到的文档
+        for doc_dir in $(find . -name "html" -type d | grep -E "(pyside6|shiboken6)"); do
+          echo "Found docs: $doc_dir"
+          cp -r "$doc_dir" "pyside-6.10-docs/$(basename $(dirname $doc_dir))" 2>/dev/null || true
+        done
         
-        # 复制 Shiboken6 文档
-        SHIBOKEN_DOCS=$(find . -path "*/shiboken6/doc/html" -type d | head -1)
-        if [ -n "$SHIBOKEN_DOCS" ] && [ -d "$SHIBOKEN_DOCS" ]; then
-          echo "Copying Shiboken6 docs from: $SHIBOKEN_DOCS"
-          cp -r "$SHIBOKEN_DOCS" pyside-6.10-docs/shiboken6
-        else
-          echo "Shiboken6 documentation not found in expected location"
-        fi
+        # 复制QCH文件
+        find . -name "*.qch" -exec cp {} pyside-6.10-docs/ \; 2>/dev/null || true
         
-        # 显示打包结果
-        echo "Final packaged content:"
+        echo "=== Final packaged content ==="
         ls -la pyside-6.10-docs/
         
     - name: Upload documentation artifacts
@@ -153,10 +168,3 @@ jobs:
         name: pyside-6.10-documentation
         path: pyside-setup/pyside-6.10-docs/
         retention-days: 30
-        
-    - name: Create build summary
-      run: |
-        echo "## PySide 6.10 Documentation Build" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "Build process completed." >> $GITHUB_STEP_SUMMARY
-        echo "Check artifacts for generated documentation." >> $GITHUB_STEP_SUMMARY
