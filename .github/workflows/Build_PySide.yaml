@@ -1,21 +1,29 @@
-name: Build PySide 6.10 Documentation
+name: Build PySide from Source
 
 on:
-  workflow_dispatch
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    - cron: '0 0 * * 0'  # 每周日自动运行
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
-  build-docs:
-    runs-on: ubuntu-22.04
+  build-pyside:
+    name: Build PySide
+    runs-on: ubuntu-latest
     
     steps:
-    - name: Clone and checkout PySide 6.10
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Clone PySide source
       run: |
-        git clone https://code.qt.io/pyside/pyside-setup
+        git clone https://code.qt.io/pyside/pyside-setup.git
         cd pyside-setup
-        git checkout 6.10
+        git submodule update --init --recursive
         ls -la
-        echo "=== Checking build scripts ==="
-        find . -name "setup_runner.py" -type f | head -5
         
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -26,145 +34,36 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          libxml2-dev \
-          libxslt-dev \
-          graphviz \
-          ninja-build \
           build-essential \
           cmake \
           git \
-          libgl1-mesa-dev \
-          libxkbcommon-x11-0 \
-          libxcb-icccm4 \
-          libxcb-image0 \
-          libxcb-keysyms1 \
-          libxcb-randr0 \
-          libxcb-render-util0 \
-          libxcb-xinerama0 \
-          libxcb-xinput0 \
-          libxcb-xfixes0 \
-          libx11-xcb-dev \
-          bison \
-          flex
+          libclang-dev \
+          libxml2-dev \
+          libxslt1-dev \
+          qtbase5-dev \
+          qttools5-dev \
+          qttools5-dev-tools \
+          libqt5svg5-dev \
+          libssl-dev \
+          libffi-dev
         
-    - name: Download Qt 6.10 source
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        cd pyside-setup
+        pip install -r requirements.txt
+        pip install wheel setuptools
+        
+    - name: Build PySide
       run: |
         cd pyside-setup
-        wget -q https://download.qt.io/archive/qt/6.10/6.10.0/single/qt-everywhere-src-6.10.0.tar.xz
-        tar -xf qt-everywhere-src-6.10.0.tar.xz
-        echo "QT_SRC_DIR=$(pwd)/qt-everywhere-src-6.10.0" >> $GITHUB_ENV
+        python setup.py build --qmake=/usr/bin/qmake
         
-    - name: Create virtual environment
-      run: |
-        cd pyside-setup
-        python -m venv pyside-venv
-        source pyside-venv/bin/activate
-        
-        # 使用较新但兼容的版本
-        pip install --upgrade pip
-        pip install setuptools wheel ninja cmake
-        
-        # 安装文档依赖
-        pip install sphinx sphinx-rtd-theme sphinx-intl graphviz breathe
-        
-    - name: Build Shiboken6 first (standalone)
-      run: |
-        cd pyside-setup
-        source pyside-venv/bin/activate
-        
-        echo "=== Building Shiboken6 ==="
-        python -c "
-import sys
-sys.path.insert(0, '.')
-from build_scripts.setup_runner import build_shiboken
-build_shiboken()
-        " || echo "Alternative build method failed, trying direct approach"
-        
-        # 直接尝试构建shiboken
-        python setup.py build_shiboken --qt-src-dir="$QT_SRC_DIR" --ignore-git --quiet
-        
-    - name: Build PySide6 with docs
-      run: |
-        cd pyside-setup
-        source pyside-venv/bin/activate
-        
-        echo "=== Building PySide6 with documentation ==="
-        
-        # 尝试直接调用构建函数
-        python -c "
-import sys
-sys.path.insert(0, '.')
-from build_scripts.setup_runner import build_pyside
-build_pyside()
-        " || echo "Direct function call failed"
-        
-        # 备用方法：使用环境变量
-        export PYSIDE_BUILD_TYPE=Release
-        export PYSIDE_DOC_BUILD=ON
-        python setup.py build --qt-src-dir="$QT_SRC_DIR" --ignore-git --cmake-generator=Ninja
-        
-    - name: Build documentation separately
-      run: |
-        cd pyside-setup
-        source pyside-venv/bin/activate
-        
-        echo "=== Building documentation ==="
-        
-        # 查找构建目录
-        find . -name "CMakeCache.txt" -type f | head -10
-        
-        # 尝试构建文档
-        if [ -d "build/pyside6" ]; then
-          cd build/pyside6
-          ninja apidoc
-        elif [ -d "build" ]; then
-          cd build
-          find . -name "pyside6" -type d | head -1
-          PYSIDE_DIR=$(find . -name "pyside6" -type d | head -1)
-          if [ -n "$PYSIDE_DIR" ]; then
-            cd "$PYSIDE_DIR"
-            ninja apidoc
-          fi
-        fi
-        
-    - name: Try alternative documentation build
-      run: |
-        cd pyside-setup
-        source pyside-venv/bin/activate
-        
-        echo "=== Alternative documentation build ==="
-        
-        # 使用setup.py的文档构建目标
-        python setup.py build_docs --qt-src-dir="$QT_SRC_DIR" || \
-        python setup.py build_base_docs || \
-        echo "Documentation build commands not available"
-        
-    - name: Find and package any generated docs
-      run: |
-        cd pyside-setup
-        
-        echo "=== Searching for documentation ==="
-        find . -name "*.html" -type f | head -20
-        find . -name "*.qch" -type f | head -10
-        find . -name "html" -type d | grep -E "(pyside|shiboken)" | head -10
-        
-        mkdir -p pyside-6.10-docs
-        
-        # 复制任何找到的文档
-        for doc_dir in $(find . -name "html" -type d | grep -E "(pyside6|shiboken6)"); do
-          echo "Found docs: $doc_dir"
-          cp -r "$doc_dir" "pyside-6.10-docs/$(basename $(dirname $doc_dir))" 2>/dev/null || true
-        done
-        
-        # 复制QCH文件
-        find . -name "*.qch" -exec cp {} pyside-6.10-docs/ \; 2>/dev/null || true
-        
-        echo "=== Final packaged content ==="
-        ls -la pyside-6.10-docs/
-        
-    - name: Upload documentation artifacts
+    - name: Archive build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: pyside-6.10-documentation
-        path: pyside-setup/pyside-6.10-docs/
-        retention-days: 30
+        name: pyside-build
+        path: |
+          pyside-setup/build/
+          pyside-setup/dist/
+        retention-days: 7
